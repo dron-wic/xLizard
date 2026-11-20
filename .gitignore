@@ -23,6 +23,7 @@ ENV/
 # Packaging / local builds (do not publish binaries)
 build/
 dist/
+release/
 *.spec.bak
 *.whl
 *.tar.gz

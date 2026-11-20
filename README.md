@@ -7,6 +7,14 @@
 
 **xLizard** — расширенный анализатор метрик сложности кода для C/C++ с метриками SourceMonitor и HTML-отчётами.
 
+## Происхождение и лицензия
+
+xLizard основан на [Lizard](https://github.com/terryyin/lizard) (Terry Yin и contributors, [lizard.ws](https://www.lizard.ws)).
+
+Код распространяется под **MIT** — см. файл [`LICENSE`](LICENSE). Сохранён copyright исходного Lizard; добавлены авторы производной работы (Xor1no, dron-wic). Это не официальный релиз Lizard.
+
+Когнитивная сложность (CogC) считается по открытой спецификации SonarSource.
+
 ## Безопасность и Конфиденциальность
 
 **ВАЖНО: ВСЕ АНАЛИЗЫ ВЫПОЛНЯЮТСЯ ЛОКАЛЬНО**
