@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xlizard"
+version = "1.1.7"
+description = "Extended Lizard with additional static code analysis features"
+readme = "README.md"
+authors = [
+    {name = "Xor1no"},
+    {name = "dron-wic"},
+]
+license = "MIT"
+requires-python = ">=3.8"
+dependencies = [
+    "jinja2>=3.1.3",
+    "tqdm>=4.67.1",
+    "pathspec>=0.12.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pyinstaller>=6.0"]
+
+[project.scripts]
+xlizard = "xlizard.xlizard:main"
+xlizard-gui = "xlizard.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["xlizard*"]
+
+[tool.setuptools.package-data]
+xlizard = [
+    "xlizard_ext/*",
+    "xlizard_languages/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

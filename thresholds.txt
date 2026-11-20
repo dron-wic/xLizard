@@ -1,0 +1,18 @@
+# Пороги метрик xLizard
+# Значение метрики ВЫШЕ указанного порога считается превышением.
+# Формат: ключ=число  (синонимы: CCN, CogC, ND, LOC, …)
+#
+cyclomatic_complexity=15   # Цикломатическая сложность (CCN)
+cognitive_complexity=25   # Когнитивная сложность (CogC)
+max_nesting_depth=5   # Глубина вложенности (ND)
+nloc=80   # Строки кода (NLOC)
+token_count=500   # Число токенов (Tokens)
+parameter_count=5   # Число параметров (PARAM)
+length=150   # Длина функции (Length)
+max_block_depth=5   # Глубина блоков (Depth)
+pointer_operations=100   # Операции с указателями (Ptr Ops)
+preprocessor_directives=40   # Директивы препроцессора (PP)
+logical_operators=50   # Логические операторы (Logic)
+conditional_statements=50   # Условные операторы (Cond)
+comment_percentage=0   # Доля комментариев (Comments %)
+function_count=40   # Функций в файле (Funcs)
