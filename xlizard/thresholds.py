@@ -1,17 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-Load metric thresholds from a plain-text file next to the executable (or CWD).
+Application settings and metric thresholds (xlizard.json next to the executable).
 
 Values greater than the threshold are treated as exceeded.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Mapping, MutableMapping, Optional
+from typing import Any, Dict, Mapping, MutableMapping, Optional
 
-THRESHOLDS_FILENAME = "thresholds.txt"
+CONFIG_FILENAME = "xlizard.json"
+THRESHOLDS_FILENAME = "thresholds.txt"  # legacy; used only for migration
+THEME_FILENAME_LEGACY = "ui_theme.txt"
+CONFIG_VERSION = 1
 
 # Canonical metric keys used in options.thresholds / HTML
 # Baselines tuned for quality C (NIST/HIS/Sonar + p90–p95 of musl/cJSON/redis).
@@ -30,7 +34,25 @@ DEFAULT_THRESHOLDS: Dict[str, float] = {
     "logical_operators": 50,  # file totals; old 10 flagged almost all modules
     "conditional_statements": 50,  # file totals; old 8 was unrealistically tight
     "function_count": 40,  # soft modularity gate (musl tiny, redis larger)
+    # HIS pack (optional; gated by features.his_metrics)
+    "goto_count": 0,  # HIS GOTO ≤ 0
+    "return_count": 1,  # HIS RETURN ≤ 1
+    "path_count": 80,  # HIS PATH ≤ 80 (estimated)
+    "calls": 7,  # HIS CALLS ≤ 7
+    "calling": 5,  # HIS CALLING ≤ 5
 }
+
+# Metrics computed/shown only when features.his_metrics is enabled
+HIS_METRIC_KEYS = (
+    "goto_count",
+    "return_count",
+    "path_count",
+    "calls",
+    "calling",
+)
+
+# Limit 0 disables the gate (not “max allowed 0”)
+DISABLE_GATE_WHEN_LIMIT_ZERO = frozenset({"comment_percentage"})
 
 # Russian label + English short name (for UI)
 METRIC_LABELS: Dict[str, str] = {
@@ -48,6 +70,11 @@ METRIC_LABELS: Dict[str, str] = {
     "logical_operators": "Логические операторы (Logic)",
     "conditional_statements": "Условные операторы (Cond)",
     "function_count": "Функций в файле (Funcs)",
+    "goto_count": "Операторы goto (GOTO)",
+    "return_count": "Точки выхода return (RETURN)",
+    "path_count": "Число путей (PATH)",
+    "calls": "Вызываемые функции (CALLS)",
+    "calling": "Вызывающие функции (CALLING)",
 }
 
 # Hover help: scope + what the metric affects (embedded-oriented)
@@ -138,6 +165,32 @@ METRIC_HELP: Dict[str, str] = {
         "Влияет на: модульность единицы компиляции, размер ревью "
         "и ясность ответственности файла (один периферийный модуль)."
     ),
+    "goto_count": (
+        "Уровень: функция. Пакет HIS (включается в «Пороги»).\n"
+        "Число операторов goto в теле функции.\n"
+        "HIS: допустимо 0. Влияет на: тестируемость и читаемость потока."
+    ),
+    "return_count": (
+        "Уровень: функция. Пакет HIS (включается в «Пороги»).\n"
+        "Число операторов return (точек выхода).\n"
+        "HIS: ≤ 1. Влияет на: единообразие точек выхода (стиль HIS)."
+    ),
+    "path_count": (
+        "Уровень: функция. Пакет HIS (включается в «Пороги»).\n"
+        "Оценка числа ациклических путей выполнения (не полный CFG "
+        "Polyspace/Understand).\n"
+        "HIS: ≤ 80. Влияет на: ориентир объёма white-box тестов."
+    ),
+    "calls": (
+        "Уровень: функция. Пакет HIS (включается в «Пороги»).\n"
+        "Число уникальных вызываемых функций (по именам в проекте).\n"
+        "HIS: ≤ 7. Влияет на: связанность модуля; best-effort без препроцессора."
+    ),
+    "calling": (
+        "Уровень: функция. Пакет HIS (включается в «Пороги»).\n"
+        "Число уникальных вызывающих функций (fan-in по именам).\n"
+        "HIS: ≤ 5. Влияет на: переиспользование API; best-effort call-graph."
+    ),
 }
 
 # Short titles for the «О метриках» notebook tabs
@@ -156,6 +209,11 @@ METRIC_TAB_TITLES: Dict[str, str] = {
     "conditional_statements": "Cond",
     "comment_percentage": "Comm%",
     "function_count": "Funcs",
+    "goto_count": "GOTO",
+    "return_count": "RETURN",
+    "path_count": "PATH",
+    "calls": "CALLS",
+    "calling": "CALLING",
 }
 
 # First tab of «О метриках»: overview (nothing dropped from the old dialog)
@@ -163,7 +221,11 @@ METRICS_ABOUT_GENERAL = """xLizard для embedded (MCU)
 
 Программа считает метрики сложности C/C++ для прошивок и
 драйверов. Значение метрики ВЫШЕ порога считается превышением.
-Пороги правятся в панели UI и в thresholds.txt рядом с программой.
+Все настройки — в xlizard.json рядом с программой (окно «Пороги»).
+
+Пакет HIS (GOTO / RETURN / PATH / CALLS / CALLING) включается
+чекбоксом в «Пороги». Пока выключен — эти метрики не считаются
+и в HTML показывается пометка об отключении.
 
 На следующих вкладках — подробный разбор каждой метрики
 с примером расчёта. Ниже — общая карта и источники порогов.
@@ -195,6 +257,17 @@ METRICS_ABOUT_GENERAL = """xLizard для embedded (MCU)
 • Funcs — сколько функций в файле.
 • Comments % — доля комментариев от строк файла (%).
   Порог 0 отключает эту проверку.
+
+────────────────────────────────
+Пакет HIS (опционально)
+────────────────────────────────
+Включается в «Пороги» → «HIS-метрики». Источник: Hersteller
+Initiative Software (автопром / ISO 26262 контекст).
+• GOTO ≤ 0 — запрет goto.
+• RETURN ≤ 1 — одна точка выхода.
+• PATH ≤ 80 — оценка ациклических путей (упрощённая, не Polyspace).
+• CALLS ≤ 7 — уникальные вызываемые функции (по именам).
+• CALLING ≤ 5 — уникальные вызывающие (fan-in по именам).
 
 ────────────────────────────────
 Откуда взяты базовые границы
@@ -530,6 +603,82 @@ Funcs = 3 для этого файла.
 Влияет на: модульность единицы компиляции, размер ревью и ясность
 ответственности файла (один периферийный модуль).
 """,
+    "goto_count": """Операторы goto (GOTO) — HIS
+Уровень: функция (пакет HIS)
+
+Как считается
++1 за каждый токен goto в теле функции.
+
+Пример
+  if (err) goto fail;
+  …
+fail:
+  cleanup();
+GOTO = 1 → превышение лимита HIS (0).
+
+Базовый порог: 0 (HIS).
+Влияет на: тестируемость и читаемость потока управления.
+Включается чекбоксом «HIS-метрики» в окне «Пороги».
+""",
+    "return_count": """Точки выхода return (RETURN) — HIS
+Уровень: функция (пакет HIS)
+
+Как считается
+Число токенов return в теле функции.
+
+Пример
+  if (!ok) return -1;
+  return 0;
+RETURN = 2 → превышение лимита HIS (≤ 1).
+
+Базовый порог: 1 (HIS).
+Влияет на: единообразие точек выхода по стилю HIS/MISRA-ориентированных правил.
+Включается чекбоксом «HIS-метрики» в окне «Пороги».
+""",
+    "path_count": """Число путей (PATH) — HIS
+Уровень: функция (пакет HIS)
+
+Как считается
+Оценка числа ациклических путей по упрощённому разбору
+ветвлений (if / else / switch / case / циклы / ?:).
+Это не полный CFG industrial-инструментов (Polyspace, Understand).
+
+Пример
+  Два независимых if подряд дают больше путей, чем один if.
+HIS: PATH ≤ 80.
+
+Базовый порог: 80 (HIS).
+Влияет на: оценку объёма white-box тестов.
+Включается чекбоксом «HIS-метрики» в окне «Пороги».
+""",
+    "calls": """Вызываемые функции (CALLS) — HIS
+Уровень: функция (пакет HIS)
+
+Как считается
+Число уникальных имён функций из текущего проекта, которые
+встречаются в теле как вызовы. Повторный вызов той же функции
+не увеличивает счётчик. Без раскрытия макросов и через указатели
+на функции — best-effort.
+
+Пример
+  foo(); bar(); foo();  → CALLS = 2 (если foo и bar есть в проекте).
+
+Базовый порог: 7 (HIS).
+Включается чекбоксом «HIS-метрики» в окне «Пороги».
+""",
+    "calling": """Вызывающие функции (CALLING) — HIS
+Уровень: функция (пакет HIS)
+
+Как считается
+Сколько других функций проекта содержат вызов данной
+(уникальный fan-in по именам). Best-effort call-graph.
+
+Пример
+  Если bar и baz вызывают foo, у foo CALLING = 2.
+
+Базовый порог: 5 (HIS).
+Включается чекбоксом «HIS-метрики» в окне «Пороги».
+""",
 }
 
 # Order for GUI threshold editors and «О метриках» tabs
@@ -548,7 +697,25 @@ METRIC_ORDER = [
     "conditional_statements",
     "comment_percentage",
     "function_count",
+    "goto_count",
+    "return_count",
+    "path_count",
+    "calls",
+    "calling",
 ]
+
+# Soft exceedance band (% above limit) used by quality score; per metric.
+DEFAULT_SOFT_PCT_VALUE = 25
+DEFAULT_SOFT_PCT: Dict[str, float] = {key: DEFAULT_SOFT_PCT_VALUE for key in METRIC_ORDER}
+DEFAULT_SOFT_PCT["goto_count"] = 1
+DEFAULT_SOFT_PCT["return_count"] = 1
+SOFT_PCT_SUFFIX = "_soft_pct"
+DEFAULT_HIS_METRICS = False
+DEFAULT_THEME = "dark"
+
+
+def soft_pct_key(metric: str) -> str:
+    return "%s%s" % (metric, SOFT_PCT_SUFFIX)
 
 
 def metrics_about_tabs():
@@ -592,6 +759,17 @@ _ALIASES = {
     "logical": "logical_operators",
     "conditionals": "conditional_statements",
     "functions": "function_count",
+    "goto": "goto_count",
+    "gotos": "goto_count",
+    "return": "return_count",
+    "returns": "return_count",
+    "path": "path_count",
+    "paths": "path_count",
+    "call": "calls",
+    "callee": "calls",
+    "callees": "calls",
+    "caller": "calling",
+    "callers": "calling",
 }
 
 
@@ -600,22 +778,55 @@ def application_dir() -> Path:
     if getattr(sys, "frozen", False):
         # onedir: exe in dist/xLizard/; onefile: exe next to extracted _MEIPASS
         return Path(sys.executable).resolve().parent
-    # Prefer process CWD so a local thresholds.txt overrides package defaults
+    # Prefer process CWD so a local config overrides package defaults
     return Path.cwd()
 
 
-def thresholds_path(explicit: Optional[str] = None) -> Path:
+def config_path(explicit: Optional[str] = None) -> Path:
     if explicit:
         return Path(explicit).expanduser().resolve()
-    return application_dir() / THRESHOLDS_FILENAME
+    return application_dir() / CONFIG_FILENAME
+
+
+def thresholds_path(explicit: Optional[str] = None) -> Path:
+    """Path to settings file (xlizard.json). Name kept for callers."""
+    return config_path(explicit)
+
+
+def default_app_config() -> Dict[str, Any]:
+    metrics: Dict[str, Dict[str, float]] = {}
+    for key in METRIC_ORDER:
+        limit_val = DEFAULT_THRESHOLDS[key]
+        soft_val = DEFAULT_SOFT_PCT[key]
+        metrics[key] = {
+            "limit": int(limit_val) if float(limit_val).is_integer() else float(limit_val),
+            "soft_pct": int(soft_val),
+        }
+    return {
+        "version": CONFIG_VERSION,
+        "theme": DEFAULT_THEME,
+        "features": {"his_metrics": DEFAULT_HIS_METRICS},
+        "metrics": metrics,
+    }
 
 
 def normalize_key(key: str) -> str:
     k = key.strip().lower().replace("-", "_").replace(" ", "_")
+    if k.startswith("soft_pct_"):
+        base = k[len("soft_pct_") :]
+        base = _ALIASES.get(base, base)
+        return soft_pct_key(base)
+    if k.endswith(SOFT_PCT_SUFFIX):
+        base = k[: -len(SOFT_PCT_SUFFIX)]
+        if base.endswith("_"):
+            base = base[:-1]
+        base = _ALIASES.get(base, base)
+        return soft_pct_key(base)
     return _ALIASES.get(k, k)
 
 
 def parse_thresholds_text(text: str) -> Dict[str, float]:
+    """Legacy thresholds.txt parser (migration / tests)."""
     result: Dict[str, float] = {}
     for raw in text.splitlines():
         line = raw.strip()
@@ -635,59 +846,239 @@ def parse_thresholds_text(text: str) -> Dict[str, float]:
     return result
 
 
+def split_limits_and_soft_pcts(
+    data: Mapping[str, float],
+) -> tuple[Dict[str, float], Dict[str, float]]:
+    """Split flat key→value map into metric limits and soft_pct maps."""
+    limits = dict(DEFAULT_THRESHOLDS)
+    soft = dict(DEFAULT_SOFT_PCT)
+    for key, value in data.items():
+        if key.endswith(SOFT_PCT_SUFFIX):
+            metric = key[: -len(SOFT_PCT_SUFFIX)]
+            if metric in DEFAULT_SOFT_PCT:
+                soft[metric] = max(1, min(100, float(value)))
+        elif key in DEFAULT_THRESHOLDS:
+            limits[key] = float(value)
+    return limits, soft
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
+def _merge_metrics_from_json(
+    raw_metrics: Any,
+) -> tuple[Dict[str, float], Dict[str, float]]:
+    limits = dict(DEFAULT_THRESHOLDS)
+    soft = dict(DEFAULT_SOFT_PCT)
+    if not isinstance(raw_metrics, dict):
+        return limits, soft
+    for key, entry in raw_metrics.items():
+        canon = normalize_key(str(key))
+        if canon not in DEFAULT_THRESHOLDS:
+            continue
+        if isinstance(entry, dict):
+            if "limit" in entry:
+                try:
+                    limits[canon] = float(entry["limit"])
+                except (TypeError, ValueError):
+                    pass
+            if "soft_pct" in entry:
+                try:
+                    soft[canon] = max(1, min(100, float(entry["soft_pct"])))
+                except (TypeError, ValueError):
+                    pass
+        else:
+            try:
+                limits[canon] = float(entry)
+            except (TypeError, ValueError):
+                pass
+    return limits, soft
+
+
+def _migrate_legacy_files(base_dir: Path) -> Optional[Dict[str, Any]]:
+    """Build config dict from legacy thresholds.txt / ui_theme.txt if present."""
+    cfg = default_app_config()
+    legacy_thr = base_dir / THRESHOLDS_FILENAME
+    legacy_theme = base_dir / THEME_FILENAME_LEGACY
+    changed = False
+    if legacy_thr.is_file():
+        try:
+            loaded = parse_thresholds_text(legacy_thr.read_text(encoding="utf-8"))
+            limits, soft = split_limits_and_soft_pcts(loaded)
+            for key in METRIC_ORDER:
+                cfg["metrics"][key] = {
+                    "limit": int(limits[key])
+                    if float(limits[key]).is_integer()
+                    else limits[key],
+                    "soft_pct": int(soft[key]),
+                }
+            changed = True
+        except OSError:
+            pass
+    if legacy_theme.is_file():
+        try:
+            theme = legacy_theme.read_text(encoding="utf-8").strip().lower()
+            if theme in ("dark", "light"):
+                cfg["theme"] = theme
+                changed = True
+        except OSError:
+            pass
+    return cfg if changed else None
+
+
+def write_app_config(
+    path: Optional[Path] = None,
+    *,
+    thresholds: Optional[Mapping[str, float]] = None,
+    soft_pcts: Optional[Mapping[str, float]] = None,
+    theme: Optional[str] = None,
+    his_metrics: Optional[bool] = None,
+    config: Optional[Mapping[str, Any]] = None,
+) -> Path:
+    """Write full xlizard.json (limits, soft_pct, theme, HIS flag)."""
+    file_path = Path(path) if path else config_path()
+    if config is not None:
+        payload = dict(config)
+    else:
+        payload = default_app_config()
+        data = dict(DEFAULT_THRESHOLDS)
+        soft = dict(DEFAULT_SOFT_PCT)
+        if thresholds:
+            parsed_limits, parsed_soft = split_limits_and_soft_pcts(thresholds)
+            data.update(parsed_limits)
+            soft.update(parsed_soft)
+            for key, value in thresholds.items():
+                if key in DEFAULT_THRESHOLDS:
+                    data[key] = value
+        if soft_pcts:
+            for key, value in soft_pcts.items():
+                if key in DEFAULT_SOFT_PCT:
+                    soft[key] = max(1, min(100, float(value)))
+        metrics: Dict[str, Dict[str, float]] = {}
+        for key in METRIC_ORDER:
+            limit_val = data[key]
+            if isinstance(limit_val, float) and limit_val.is_integer():
+                limit_val = int(limit_val)
+            metrics[key] = {"limit": limit_val, "soft_pct": int(soft[key])}
+        payload["metrics"] = metrics
+        if theme is not None:
+            payload["theme"] = theme if theme in ("dark", "light") else DEFAULT_THEME
+        if his_metrics is not None:
+            payload["features"] = {"his_metrics": bool(his_metrics)}
+
+    payload.setdefault("version", CONFIG_VERSION)
+    payload.setdefault("theme", DEFAULT_THEME)
+    payload.setdefault("features", {"his_metrics": DEFAULT_HIS_METRICS})
+    payload.setdefault("metrics", default_app_config()["metrics"])
+
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    file_path.write_text(text, encoding="utf-8")
+    return file_path
+
+
+def load_app_config(
+    path: Optional[str] = None,
+    *,
+    create_if_missing: bool = True,
+) -> Dict[str, Any]:
+    """
+    Load xlizard.json. Migrates legacy txt once if JSON is missing.
+    Returns dict with keys: version, theme, features, metrics, plus
+    convenience: thresholds, soft_pcts, his_metrics.
+    """
+    file_path = config_path(path)
+    cfg = default_app_config()
+
+    if not file_path.is_file():
+        migrated = _migrate_legacy_files(file_path.parent)
+        if migrated is not None:
+            cfg = migrated
+            if create_if_missing:
+                try:
+                    write_app_config(file_path, config=cfg)
+                except OSError:
+                    pass
+        elif create_if_missing:
+            try:
+                write_app_config(file_path, config=cfg)
+            except OSError:
+                pass
+    else:
+        try:
+            raw = json.loads(file_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = {}
+        if isinstance(raw, dict):
+            theme = str(raw.get("theme", DEFAULT_THEME)).strip().lower()
+            cfg["theme"] = theme if theme in ("dark", "light") else DEFAULT_THEME
+            features = raw.get("features") if isinstance(raw.get("features"), dict) else {}
+            cfg["features"] = {
+                "his_metrics": _coerce_bool(
+                    features.get("his_metrics", DEFAULT_HIS_METRICS),
+                    DEFAULT_HIS_METRICS,
+                )
+            }
+            limits, soft = _merge_metrics_from_json(raw.get("metrics"))
+            for key in METRIC_ORDER:
+                cfg["metrics"][key] = {
+                    "limit": int(limits[key])
+                    if float(limits[key]).is_integer()
+                    else limits[key],
+                    "soft_pct": int(soft[key]),
+                }
+
+    limits = {k: float(cfg["metrics"][k]["limit"]) for k in METRIC_ORDER}
+    soft = {k: float(cfg["metrics"][k]["soft_pct"]) for k in METRIC_ORDER}
+    cfg["thresholds"] = limits
+    cfg["soft_pcts"] = soft
+    cfg["his_metrics"] = bool(cfg["features"].get("his_metrics", False))
+    return cfg
+
+
+def load_threshold_config(
+    path: Optional[str] = None,
+    *,
+    create_if_missing: bool = True,
+) -> tuple[Dict[str, float], Dict[str, float]]:
+    """Load metric limits and soft_pct from xlizard.json."""
+    cfg = load_app_config(path, create_if_missing=create_if_missing)
+    return dict(cfg["thresholds"]), dict(cfg["soft_pcts"])
+
+
 def load_thresholds(
     path: Optional[str] = None,
     *,
     create_if_missing: bool = True,
 ) -> Dict[str, float]:
-    """
-    Load thresholds from file. Missing keys fall back to DEFAULT_THRESHOLDS.
-    If the file is missing and create_if_missing, write a default file.
-    """
-    file_path = thresholds_path(path)
-    merged = dict(DEFAULT_THRESHOLDS)
-
-    if not file_path.is_file():
-        if create_if_missing:
-            try:
-                write_thresholds_file(file_path, merged)
-            except OSError:
-                pass
-        return merged
-
-    try:
-        text = file_path.read_text(encoding="utf-8")
-    except OSError:
-        return merged
-
-    loaded = parse_thresholds_text(text)
-    merged.update(loaded)
-    return merged
+    """Load metric limits (soft_pct ignored in the return value)."""
+    limits, _soft = load_threshold_config(path, create_if_missing=create_if_missing)
+    return limits
 
 
 def write_thresholds_file(
     path: Optional[Path] = None,
     thresholds: Optional[Mapping[str, float]] = None,
+    soft_pcts: Optional[Mapping[str, float]] = None,
+    *,
+    theme: Optional[str] = None,
+    his_metrics: Optional[bool] = None,
 ) -> Path:
-    path = Path(path) if path else thresholds_path()
-    data = dict(DEFAULT_THRESHOLDS)
-    if thresholds:
-        data.update(thresholds)
-
-    lines = [
-        "# Пороги метрик xLizard",
-        "# Значение метрики ВЫШЕ указанного порога считается превышением.",
-        "# Формат: ключ=число  (синонимы: CCN, CogC, ND, LOC, …)",
-        "#",
-    ]
-    for key in METRIC_ORDER:
-        label = METRIC_LABELS.get(key, key)
-        lines.append("%s=%s   # %s" % (key, data[key], label))
-    lines.append("")
-    content = "\n".join(lines)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return path
+    """Write settings to xlizard.json (API kept for callers)."""
+    return write_app_config(
+        path,
+        thresholds=thresholds,
+        soft_pcts=soft_pcts,
+        theme=theme,
+        his_metrics=his_metrics,
+    )
 
 
 def apply_to_options(options, thresholds: MutableMapping[str, float]) -> None:

@@ -19,3 +19,8 @@ def all_metrics_c(fixtures_c):
 @pytest.fixture(scope="session")
 def file_metrics_c(fixtures_c):
     return fixtures_c / "file_metrics.c"
+
+
+@pytest.fixture(scope="session")
+def large_suite_dir(fixtures_c):
+    return fixtures_c / "large"

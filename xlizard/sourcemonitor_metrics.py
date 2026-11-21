@@ -13,9 +13,20 @@ from io import StringIO
 import hashlib
 import threading
 
-# Настройка логгирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger()
+# Named logger — avoid logging.basicConfig(sys.stderr=None) under pythonw/GUI
+logger = logging.getLogger("xlizard.sourcemonitor")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    _stream = sys.stderr if sys.stderr is not None else sys.stdout
+    if _stream is not None:
+        _handler = logging.StreamHandler(_stream)
+        _handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        )
+        logger.addHandler(_handler)
+    else:
+        logger.addHandler(logging.NullHandler())
 
 class Config:
     """Конфигурация анализатора с улучшенными настройками безопасности"""

@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "theme": "dark",
+  "features": {
+    "his_metrics": false
+  },
+  "metrics": {
+    "cyclomatic_complexity": {
+      "limit": 15,
+      "soft_pct": 25
+    },
+    "cognitive_complexity": {
+      "limit": 25,
+      "soft_pct": 25
+    },
+    "max_nesting_depth": {
+      "limit": 5,
+      "soft_pct": 25
+    },
+    "nloc": {
+      "limit": 80,
+      "soft_pct": 25
+    },
+    "token_count": {
+      "limit": 500,
+      "soft_pct": 25
+    },
+    "parameter_count": {
+      "limit": 5,
+      "soft_pct": 25
+    },
+    "length": {
+      "limit": 150,
+      "soft_pct": 25
+    },
+    "max_block_depth": {
+      "limit": 5,
+      "soft_pct": 25
+    },
+    "pointer_operations": {
+      "limit": 100,
+      "soft_pct": 25
+    },
+    "preprocessor_directives": {
+      "limit": 40,
+      "soft_pct": 25
+    },
+    "logical_operators": {
+      "limit": 50,
+      "soft_pct": 25
+    },
+    "conditional_statements": {
+      "limit": 50,
+      "soft_pct": 25
+    },
+    "comment_percentage": {
+      "limit": 0,
+      "soft_pct": 25
+    },
+    "function_count": {
+      "limit": 40,
+      "soft_pct": 25
+    },
+    "goto_count": {
+      "limit": 0,
+      "soft_pct": 1
+    },
+    "return_count": {
+      "limit": 1,
+      "soft_pct": 1
+    },
+    "path_count": {
+      "limit": 80,
+      "soft_pct": 25
+    },
+    "calls": {
+      "limit": 7,
+      "soft_pct": 25
+    },
+    "calling": {
+      "limit": 5,
+      "soft_pct": 25
+    }
+  }
+}

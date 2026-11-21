@@ -983,13 +983,22 @@ def get_all_source_files(paths, exclude_patterns, lans):
     return filter(_validate_file, all_listed_files(paths))
 
 
-def _ensure_core_metric_extensions(extension_names):
-    """Always analyze CogC and ND together with the core metrics."""
+HIS_EXTENSION_NAMES = ("gotocount", "returncount", "pathcount", "io")
+
+
+def _ensure_core_metric_extensions(extension_names, his_metrics=False):
+    """Always analyze CogC and ND; HIS pack only when enabled."""
     names = list(extension_names or [])
     lower = {n.lower() for n in names if isinstance(n, str)}
     for required in ("cognitive", "nd"):
         if required not in lower:
             names.append(required)
+            lower.add(required)
+    if his_metrics:
+        for required in HIS_EXTENSION_NAMES:
+            if required not in lower:
+                names.append(required)
+                lower.add(required)
     return names
 
 
@@ -1007,33 +1016,62 @@ def parse_args(argv):
         return parser_to_extend
     parser = extend_parser(arg_parser(argv[0]))
     opt = parser.parse_args(args=argv[1:])
-    opt.extensions = get_extensions(_ensure_core_metric_extensions(opt.extensions))
+
+    # xlizard.json next to the exe / CWD (explicit -T wins)
+    _func_threshold_keys = {
+        "cyclomatic_complexity", "cognitive_complexity", "max_nesting_depth",
+        "max_nested_structures", "nloc", "token_count", "parameter_count",
+        "length", "goto_count", "return_count", "path_count", "calls", "calling",
+    }
+    his_metrics = False
+    try:
+        from .thresholds import (
+            DEFAULT_SOFT_PCT,
+            HIS_METRIC_KEYS,
+            load_app_config,
+            sync_sourcemonitor_config,
+        )
+        app_cfg = load_app_config(create_if_missing=True)
+        file_thresholds = dict(app_cfg["thresholds"])
+        file_soft_pcts = dict(app_cfg["soft_pcts"])
+        his_metrics = bool(app_cfg.get("his_metrics", False))
+        sync_sourcemonitor_config(file_thresholds)
+        for key, value in file_thresholds.items():
+            if key not in _func_threshold_keys:
+                continue
+            if key in HIS_METRIC_KEYS and not his_metrics:
+                continue
+            opt.thresholds.setdefault(key, value)
+        # Keep full map for HTML / reports
+        opt.file_thresholds = dict(file_thresholds)
+        opt.file_thresholds.update(opt.thresholds)
+        opt.file_soft_pcts = dict(DEFAULT_SOFT_PCT)
+        opt.file_soft_pcts.update(file_soft_pcts)
+        opt.his_metrics = his_metrics
+        opt.ui_theme = app_cfg.get("theme", "dark")
+    except Exception as exc:  # pragma: no cover
+        sys.stderr.write("Warning: could not load xlizard.json (%s)\n" % exc)
+        opt.file_thresholds = dict(opt.thresholds)
+        from .thresholds import DEFAULT_SOFT_PCT as _SOFT
+        opt.file_soft_pcts = dict(_SOFT)
+        opt.his_metrics = False
+
+    opt.extensions = get_extensions(
+        _ensure_core_metric_extensions(opt.extensions, his_metrics=his_metrics)
+    )
     values = OutputScheme(opt.extensions).value_columns()
+    from .thresholds import HIS_METRIC_KEYS as _HIS_KEYS
+    if not his_metrics:
+        for _hk in _HIS_KEYS:
+            opt.thresholds.pop(_hk, None)
     no_fields = (set(opt.sorting) | set(opt.thresholds.keys())) - set(values)
+    if not his_metrics:
+        no_fields -= set(_HIS_KEYS)
     if no_fields:
         error_message = "Wrong field name '%s'.\n" % ", ".join(no_fields)
         error_message += "Candidates are: " + ', '.join(values) + "\n"
         sys.stderr.write(error_message)
         sys.exit(2)
-    # thresholds.txt next to the exe / CWD (explicit -T wins)
-    _func_threshold_keys = {
-        "cyclomatic_complexity", "cognitive_complexity", "max_nesting_depth",
-        "max_nested_structures", "nloc", "token_count", "parameter_count",
-        "length",
-    }
-    try:
-        from .thresholds import load_thresholds, sync_sourcemonitor_config
-        file_thresholds = load_thresholds(create_if_missing=True)
-        sync_sourcemonitor_config(file_thresholds)
-        for key, value in file_thresholds.items():
-            if key in _func_threshold_keys:
-                opt.thresholds.setdefault(key, value)
-        # Keep full map for HTML / reports
-        opt.file_thresholds = dict(file_thresholds)
-        opt.file_thresholds.update(opt.thresholds)
-    except Exception as exc:  # pragma: no cover
-        sys.stderr.write("Warning: could not load thresholds.txt (%s)\n" % exc)
-        opt.file_thresholds = dict(opt.thresholds)
 
     if "cyclomatic_complexity" not in opt.thresholds:
         opt.thresholds["cyclomatic_complexity"] = opt.CCN
@@ -1053,6 +1091,11 @@ def parse_args(argv):
         opt.file_thresholds = dict(opt.thresholds)
     else:
         opt.file_thresholds.update(opt.thresholds)
+    if not hasattr(opt, "file_soft_pcts"):
+        from .thresholds import DEFAULT_SOFT_PCT
+        opt.file_soft_pcts = dict(DEFAULT_SOFT_PCT)
+    if not hasattr(opt, "his_metrics"):
+        opt.his_metrics = False
     if opt.output_file:
         inferred_printer = infer_printer_from_file_ext(opt.output_file)
         if inferred_printer:

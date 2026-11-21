@@ -630,6 +630,7 @@ def html_output(result, options, *_):
                             'nloc': getattr(source_function, 'nloc', 0),
                             'token_count': getattr(source_function, 'token_count', 0),
                             'parameter_count': getattr(source_function, 'parameter_count', 0),
+                            'length': int(getattr(source_function, 'length', 0) or 0),
                             'start_line': getattr(source_function, 'start_line', 0),
                             'end_line': getattr(source_function, 'end_line', 0),
                             'max_depth': 0,
@@ -905,10 +906,24 @@ def html_output(result, options, *_):
         'token_count': 500,
         'max_nesting_depth': 5,
         'length': 150,
+        'goto_count': 0,
+        'return_count': 1,
+        'path_count': 80,
+        'calls': 7,
+        'calling': 5,
     }
     full_thresholds.update(Config.THRESHOLDS)
     full_thresholds.update(getattr(options, 'file_thresholds', None) or {})
     full_thresholds.update(getattr(options, 'thresholds', {}) or {})
+
+    from xlizard.thresholds import DEFAULT_SOFT_PCT
+    from xlizard.quality_score import compute_quality_score
+    soft_pcts = dict(DEFAULT_SOFT_PCT)
+    soft_pcts.update(getattr(options, 'file_soft_pcts', None) or {})
+    his_metrics = bool(getattr(options, 'his_metrics', False))
+    quality = compute_quality_score(
+        file_list, full_thresholds, soft_pcts, his_enabled=his_metrics
+    )
     
     # Prepare dashboard data
     dashboard_data = {
@@ -963,7 +978,10 @@ def html_output(result, options, *_):
             min_comments_files=min_comments_files,
             max_comments_files=max_comments_files,
             code_ratio=code_ratio,
-            dir_complexity_stats=dir_complexity_stats)
+            dir_complexity_stats=dir_complexity_stats,
+            quality=quality,
+            soft_pcts=soft_pcts,
+            his_metrics=his_metrics)
     print(output)
     return 0
 
@@ -1003,7 +1021,13 @@ def _create_dict(source_function, file_path):
             'token_count': getattr(source_function, 'token_count', 0),
             'parameter_count': getattr(source_function, 'parameter_count', 0),
             'start_line': getattr(source_function, 'start_line', 0),
-            'end_line': getattr(source_function, 'end_line', 0)
+            'end_line': getattr(source_function, 'end_line', 0),
+            'length': int(getattr(source_function, 'length', 0) or 0),
+            'goto_count': int(getattr(source_function, 'goto_count', 0) or 0),
+            'return_count': int(getattr(source_function, 'return_count', 0) or 0),
+            'path_count': int(getattr(source_function, 'path_count', 1) or 1),
+            'calls': int(getattr(source_function, 'calls', 0) or 0),
+            'calling': int(getattr(source_function, 'calling', 0) or 0),
         }
         
         func_code = _get_function_code(file_path, source_function.start_line, source_function.end_line)
@@ -1390,6 +1414,55 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
         font-size: 1.25rem;
         font-weight: 600;
         color: var(--text-primary);
+    }
+
+    .quality-card .quality-body {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.5rem;
+        align-items: flex-start;
+    }
+
+    .quality-score-block {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+        min-width: 140px;
+    }
+
+    .quality-score-value {
+        font-size: 3rem;
+        font-weight: 700;
+        line-height: 1;
+        color: var(--text-primary);
+    }
+
+    .quality-details {
+        flex: 1;
+        min-width: 220px;
+    }
+
+    .quality-meta {
+        color: var(--text-secondary);
+        margin-bottom: 0.5rem;
+        font-size: 0.95rem;
+    }
+
+    .quality-top-list {
+        margin: 0;
+        padding-left: 1.2rem;
+        color: var(--text-primary);
+        font-size: 0.95rem;
+    }
+
+    .quality-top-list li {
+        margin-bottom: 0.25rem;
+    }
+
+    .quality-top-hint {
+        color: var(--text-secondary);
+        font-size: 0.85rem;
     }
 
     /* Metrics Grid */
@@ -1985,6 +2058,62 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
 
         <!-- Dashboard Tab -->
         <div class="tab-content active" id="dashboardTab">
+            <!-- Quality score -->
+            <div class="glass-card quality-card">
+                <div class="card-header">
+                    <h3 class="card-title">Суммарная оценка качества</h3>
+                    <div class="tooltip-icon" data-tooltip="Балл 0–100 по порогам из xlizard.json / «Пороги». Мягкое превышение — не более soft% над лимитом конкретной метрики (см. подсказки колонок и топ превышений). Жёсткое — сильнее. Незначительные превышения оставляют «Допустимо», но помечаются бейджем.">?</div>
+                </div>
+                <div class="quality-body">
+                    <div class="quality-score-block">
+                        <div class="quality-score-value">{{ quality.score }}</div>
+                        <div class="glass-badge {{ quality.status_class }}">
+                            <span class="badge-label">{{ quality.status }}</span>
+                        </div>
+                        {% if quality.has_exceedances %}
+                        <div class="glass-badge warning">
+                            <span class="badge-label">есть превышения</span>
+                        </div>
+                        {% endif %}
+                        {% if his_metrics %}
+                        <div class="glass-badge info">
+                            <span class="badge-label">HIS вкл.</span>
+                        </div>
+                        {% else %}
+                        <div class="glass-badge warning">
+                            <span class="badge-label">HIS откл.</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                    <div class="quality-details">
+                        {% if not his_metrics %}
+                        <div class="quality-meta">
+                            HIS-метрики отключены (GOTO / RETURN / PATH / CALLS / CALLING).
+                            Включить: Пороги → чекбокс HIS.
+                        </div>
+                        {% endif %}
+                        <div class="quality-meta">
+                            Мягких: {{ quality.soft_count }} · Жёстких: {{ quality.hard_count }} · Функций: {{ quality.total_functions }}
+                        </div>
+                        {% if quality.top_exceedances %}
+                        <ul class="quality-top-list">
+                            {% for item in quality.top_exceedances %}
+                            <li>
+                                {{ item.label }}:
+                                {% if item.soft %}{{ item.soft }} мягк.{% endif %}
+                                {% if item.soft and item.hard %}, {% endif %}
+                                {% if item.hard %}{{ item.hard }} жёстк.{% endif %}
+                                <span class="quality-top-hint">(лимит {{ item.limit }}, мягкое {{ item.soft_pct }}%)</span>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                        {% else %}
+                        <div class="quality-meta">Превышений порогов нет.</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
             <!-- Metrics Cards -->
             <div class="glass-card">
                 <div class="card-header">
@@ -2060,6 +2189,12 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                     <h3 class="card-title">Файлы проекта</h3>
                     <div class="directory-count">{{ total_files }} файлов</div>
                 </div>
+                {% if not his_metrics %}
+                <div class="quality-meta" style="margin-bottom: 1rem;">
+                    HIS-метрики отключены (GOTO / RETURN / PATH / CALLS / CALLING) — колонки не показаны.
+                    Включить: Пороги → чекбокс HIS.
+                </div>
+                {% endif %}
                 
                 {% for dirname, files in dir_groups.items() %}
                 <div class="directory-group">
@@ -2079,12 +2214,12 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                                 <div class="glass-badge {% if file.max_complexity <= thresholds.cyclomatic_complexity*0.5 %}safe{% elif file.max_complexity <= thresholds.cyclomatic_complexity %}warning{% else %}danger{% endif %}">
                                     <span class="badge-value">{{ file.max_complexity }}</span>
                                     <span class="badge-label">Макс. CCN</span>
-                                    <div class="tooltip-icon" data-tooltip="Пороги CCN: ≤{{ (thresholds.cyclomatic_complexity*0.5)|round }} (норма), ≤{{ thresholds.cyclomatic_complexity }} (внимание), >{{ thresholds.cyclomatic_complexity }} (превышение)">?</div>
+                                    <div class="tooltip-icon" data-tooltip="Пороги CCN: ≤{{ (thresholds.cyclomatic_complexity*0.5)|round }} (норма), ≤{{ thresholds.cyclomatic_complexity }} (внимание), >{{ thresholds.cyclomatic_complexity }} (превышение). Мягкое: {{ soft_pcts.cyclomatic_complexity|default(25)|int }}%">?</div>
                                 </div>
                                 <div class="glass-badge {% if file.active_functions_count <= thresholds.function_count*0.5 %}safe{% elif file.active_functions_count <= thresholds.function_count %}warning{% else %}danger{% endif %}">
                                     <span class="badge-value">{{ file.active_functions_count }}</span>
                                     <span class="badge-label">Функции</span>
-                                    <div class="tooltip-icon" data-tooltip="Пороги числа функций: ≤{{ (thresholds.function_count*0.5)|round }} (норма), ≤{{ thresholds.function_count }} (внимание), >{{ thresholds.function_count }} (превышение)">?</div>
+                                    <div class="tooltip-icon" data-tooltip="Пороги числа функций: ≤{{ (thresholds.function_count*0.5)|round }} (норма), ≤{{ thresholds.function_count }} (внимание), >{{ thresholds.function_count }} (превышение). Мягкое: {{ soft_pcts.function_count|default(25)|int }}%">?</div>
                                 </div>
                                 <div class="glass-badge {% if file.disabled_functions_count > 0 %}warning{% else %}safe{% endif %}">
                                     <span class="badge-value">{{ file.disabled_functions_count }}</span>
@@ -2094,17 +2229,17 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                                 <div class="glass-badge {% if file.max_block_depth <= thresholds.max_block_depth*0.7 %}safe{% elif file.max_block_depth <= thresholds.max_block_depth %}warning{% else %}danger{% endif %}">
                                     <span class="badge-value">{{ file.max_block_depth }}</span>
                                     <span class="badge-label">Глубина</span>
-                                    <div class="tooltip-icon" data-tooltip="Пороги глубины блоков: ≤{{ (thresholds.max_block_depth*0.7)|round }} (норма), ≤{{ thresholds.max_block_depth }} (внимание), >{{ thresholds.max_block_depth }} (превышение)">?</div>
+                                    <div class="tooltip-icon" data-tooltip="Пороги глубины блоков: ≤{{ (thresholds.max_block_depth*0.7)|round }} (норма), ≤{{ thresholds.max_block_depth }} (внимание), >{{ thresholds.max_block_depth }} (превышение). Мягкое: {{ soft_pcts.max_block_depth|default(25)|int }}%">?</div>
                                 </div>
                                 <div class="glass-badge {% if file.pointer_operations <= thresholds.pointer_operations*0.5 %}safe{% elif file.pointer_operations <= thresholds.pointer_operations %}warning{% else %}danger{% endif %}">
                                     <span class="badge-value">{{ file.pointer_operations }}</span>
                                     <span class="badge-label">Указатели</span>
-                                    <div class="tooltip-icon" data-tooltip="Пороги операций с указателями: ≤{{ (thresholds.pointer_operations*0.5)|round }} (норма), ≤{{ thresholds.pointer_operations }} (внимание), >{{ thresholds.pointer_operations }} (превышение)">?</div>
+                                    <div class="tooltip-icon" data-tooltip="Пороги операций с указателями: ≤{{ (thresholds.pointer_operations*0.5)|round }} (норма), ≤{{ thresholds.pointer_operations }} (внимание), >{{ thresholds.pointer_operations }} (превышение). Мягкое: {{ soft_pcts.pointer_operations|default(25)|int }}%">?</div>
                                 </div>
                                 <div class="glass-badge {% if file.preprocessor_directives <= thresholds.preprocessor_directives*0.5 %}safe{% elif file.preprocessor_directives <= thresholds.preprocessor_directives %}warning{% else %}danger{% endif %}">
                                     <span class="badge-value">{{ file.preprocessor_directives }}</span>
                                     <span class="badge-label">ПП</span>
-                                    <div class="tooltip-icon" data-tooltip="Пороги директив препроцессора: ≤{{ (thresholds.preprocessor_directives*0.5)|round }} (норма), ≤{{ thresholds.preprocessor_directives }} (внимание), >{{ thresholds.preprocessor_directives }} (превышение)">?</div>
+                                    <div class="tooltip-icon" data-tooltip="Пороги директив препроцессора: ≤{{ (thresholds.preprocessor_directives*0.5)|round }} (норма), ≤{{ thresholds.preprocessor_directives }} (внимание), >{{ thresholds.preprocessor_directives }} (превышение). Мягкое: {{ soft_pcts.preprocessor_directives|default(25)|int }}%">?</div>
                                 </div>
                                 <div class="glass-badge info">
                                     <span class="badge-value">{{ file.comment_percentage|round(1) }}%</span>
@@ -2120,26 +2255,36 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                                     <tr>
                                         <th>Функция</th>
                                         <th>
-                                            Цикл. сложность (CCN) <div class="tooltip-icon" data-tooltip="Цикломатическая сложность. Порог: {{ thresholds.cyclomatic_complexity }}">?</div>
+                                            Цикл. сложность (CCN) <div class="tooltip-icon" data-tooltip="Цикломатическая сложность. Порог: {{ thresholds.cyclomatic_complexity }}. Мягкое: {{ soft_pcts.cyclomatic_complexity|default(25)|int }}%">?</div>
                                         </th>
                                         <th>
-                                            Когн. сложность (CogC) <div class="tooltip-icon" data-tooltip="Когнитивная сложность (SonarSource). Порог: {{ thresholds.cognitive_complexity|default(25) }}">?</div>
+                                            Когн. сложность (CogC) <div class="tooltip-icon" data-tooltip="Когнитивная сложность (SonarSource). Порог: {{ thresholds.cognitive_complexity|default(25) }}. Мягкое: {{ soft_pcts.cognitive_complexity|default(25)|int }}%">?</div>
                                         </th>
                                         <th>
-                                            Строки кода (NLOC) <div class="tooltip-icon" data-tooltip="Строки кода без комментариев. Порог: {{ thresholds.nloc }}">?</div>
+                                            Строки кода (NLOC) <div class="tooltip-icon" data-tooltip="Строки кода без комментариев. Порог: {{ thresholds.nloc }}. Мягкое: {{ soft_pcts.nloc|default(25)|int }}%">?</div>
                                         </th>
                                         <th>
-                                            Токены (Tokens) <div class="tooltip-icon" data-tooltip="Число токенов. Порог: {{ thresholds.token_count }}">?</div>
+                                            Длина (Length) <div class="tooltip-icon" data-tooltip="Строки исходника от начала до конца функции. Порог: {{ thresholds.length|default(150) }}. Мягкое: {{ soft_pcts.length|default(25)|int }}%">?</div>
                                         </th>
                                         <th>
-                                            Параметры (PARAM) <div class="tooltip-icon" data-tooltip="Число параметров. Порог: {{ thresholds.parameter_count }}">?</div>
+                                            Токены (Tokens) <div class="tooltip-icon" data-tooltip="Число токенов. Порог: {{ thresholds.token_count }}. Мягкое: {{ soft_pcts.token_count|default(25)|int }}%">?</div>
                                         </th>
                                         <th>
-                                            Вложенность (ND) <div class="tooltip-icon" data-tooltip="Глубина вложенности управляющих конструкций. Порог: {{ thresholds.max_nesting_depth|default(5) }}">?</div>
+                                            Параметры (PARAM) <div class="tooltip-icon" data-tooltip="Число параметров. Порог: {{ thresholds.parameter_count }}. Мягкое: {{ soft_pcts.parameter_count|default(25)|int }}%">?</div>
                                         </th>
                                         <th>
-                                            Глубина блоков <div class="tooltip-icon" data-tooltip="Максимальная глубина блоков { }. Порог: {{ thresholds.max_block_depth }}">?</div>
+                                            Вложенность (ND) <div class="tooltip-icon" data-tooltip="Глубина вложенности управляющих конструкций. Порог: {{ thresholds.max_nesting_depth|default(5) }}. Мягкое: {{ soft_pcts.max_nesting_depth|default(25)|int }}%">?</div>
                                         </th>
+                                        <th>
+                                            Глубина блоков <div class="tooltip-icon" data-tooltip="Максимальная глубина блоков { }. Порог: {{ thresholds.max_block_depth }}. Мягкое: {{ soft_pcts.max_block_depth|default(25)|int }}%">?</div>
+                                        </th>
+                                        {% if his_metrics %}
+                                        <th>GOTO <div class="tooltip-icon" data-tooltip="HIS GOTO. Порог: {{ thresholds.goto_count|default(0) }}. Мягкое: {{ soft_pcts.goto_count|default(1)|int }}%">?</div></th>
+                                        <th>RETURN <div class="tooltip-icon" data-tooltip="HIS RETURN. Порог: {{ thresholds.return_count|default(1) }}. Мягкое: {{ soft_pcts.return_count|default(1)|int }}%">?</div></th>
+                                        <th>PATH <div class="tooltip-icon" data-tooltip="HIS PATH (оценка). Порог: {{ thresholds.path_count|default(80) }}. Мягкое: {{ soft_pcts.path_count|default(25)|int }}%">?</div></th>
+                                        <th>CALLS <div class="tooltip-icon" data-tooltip="HIS CALLS. Порог: {{ thresholds.calls|default(7) }}. Мягкое: {{ soft_pcts.calls|default(25)|int }}%">?</div></th>
+                                        <th>CALLING <div class="tooltip-icon" data-tooltip="HIS CALLING. Порог: {{ thresholds.calling|default(5) }}. Мягкое: {{ soft_pcts.calling|default(25)|int }}%">?</div></th>
+                                        {% endif %}
                                         <th>
                                             Статус <div class="tooltip-icon" data-tooltip="Статус анализа функции">?</div>
                                         </th>
@@ -2167,6 +2312,9 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                                         <td class="{% if func.in_disable_block or func.has_complex_preprocessor or not func.balanced_blocks %}metric-value-warning{% elif func.nloc > thresholds.nloc %}metric-value-high{% else %}metric-value-low{% endif %}">
                                             {{ func.nloc }}
                                         </td>
+                                        <td class="{% if func.in_disable_block or func.has_complex_preprocessor or not func.balanced_blocks %}metric-value-warning{% elif (func.length|default(0)) > (thresholds.length|default(150)) %}metric-value-high{% else %}metric-value-low{% endif %}">
+                                            {{ func.length|default(0) }}
+                                        </td>
                                         <td class="{% if func.in_disable_block or func.has_complex_preprocessor or not func.balanced_blocks %}metric-value-warning{% elif func.token_count > thresholds.token_count %}metric-value-high{% else %}metric-value-low{% endif %}">
                                             {{ func.token_count }}
                                         </td>
@@ -2179,6 +2327,23 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                                         <td class="{% if func.in_disable_block or func.has_complex_preprocessor or not func.balanced_blocks %}metric-value-warning{% elif func.max_depth > thresholds.max_block_depth %}metric-value-high{% else %}metric-value-low{% endif %}">
                                             {{ func.max_depth }}
                                         </td>
+                                        {% if his_metrics %}
+                                        <td class="{% if func.in_disable_block or func.has_complex_preprocessor or not func.balanced_blocks %}metric-value-warning{% elif (func.goto_count|default(0)) > (thresholds.goto_count|default(0)) %}metric-value-high{% else %}metric-value-low{% endif %}">
+                                            {{ func.goto_count|default(0) }}
+                                        </td>
+                                        <td class="{% if func.in_disable_block or func.has_complex_preprocessor or not func.balanced_blocks %}metric-value-warning{% elif (func.return_count|default(0)) > (thresholds.return_count|default(1)) %}metric-value-high{% else %}metric-value-low{% endif %}">
+                                            {{ func.return_count|default(0) }}
+                                        </td>
+                                        <td class="{% if func.in_disable_block or func.has_complex_preprocessor or not func.balanced_blocks %}metric-value-warning{% elif (func.path_count|default(1)) > (thresholds.path_count|default(80)) %}metric-value-high{% else %}metric-value-low{% endif %}">
+                                            {{ func.path_count|default(1) }}
+                                        </td>
+                                        <td class="{% if func.in_disable_block or func.has_complex_preprocessor or not func.balanced_blocks %}metric-value-warning{% elif (func.calls|default(0)) > (thresholds.calls|default(7)) %}metric-value-high{% else %}metric-value-low{% endif %}">
+                                            {{ func.calls|default(0) }}
+                                        </td>
+                                        <td class="{% if func.in_disable_block or func.has_complex_preprocessor or not func.balanced_blocks %}metric-value-warning{% elif (func.calling|default(0)) > (thresholds.calling|default(5)) %}metric-value-high{% else %}metric-value-low{% endif %}">
+                                            {{ func.calling|default(0) }}
+                                        </td>
+                                        {% endif %}
                                         <td class="{% if func.in_disable_block %}metric-value-warning{% elif func.has_complex_preprocessor %}metric-value-warning{% elif not func.balanced_blocks %}metric-value-high{% else %}metric-value-low{% endif %}">
                                             {% if func.in_disable_block %}
                                             Отключена

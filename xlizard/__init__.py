@@ -1,6 +1,6 @@
 """xLizard — локальный анализатор метрик сложности C/C++."""
 
-__version__ = "1.1.7"
+__version__ = "1.1.8"
 version = __version__
 
 from xlizard.combined_metrics import CombinedMetrics

@@ -1,36 +1,15 @@
 '''
-Fan in and Fan out (again)
+Fan in / fan out and HIS CALLS / CALLING (unique names, best-effort).
 '''
-from collections import Counter
 from .extension_base import ExtensionBase
-
-
-def get_all_indices(value, token_list):
-    indices = []
-    idx = -1
-    while True:
-        try:
-            idx = token_list.index(value, idx + 1)
-            indices.append(idx)
-        except ValueError:
-            break
-    return indices
 
 
 class xlizardExtension(ExtensionBase):
     '''
-        Runs the xlizard Extension for the calculation of structural
-        fan-in and fan-out of every procedures in the source code.
+    Structural fan-in / fan-out plus HIS-style unique CALLS / CALLING.
 
-        Explanation of terms:
-        'ExtensionBase': Base class for all xlizard extensions
-
-        Calculates:
-                'fan_in':                     Number of structural fan-in
-                'fan_out':		              Number of structural fan-out
-                                              in the local scope
-                'general_fan_out'             Number of structural fan-out
-                                              in the global scope
+    calls:   unique project functions referenced in the body
+    calling: unique project functions that reference this one
     '''
 
     FUNCTION_INFO = {
@@ -42,7 +21,13 @@ class xlizardExtension(ExtensionBase):
             "average_caption": " avg_fan_out "},
         "general_fan_out": {
             "caption": " general_fan_out ",
-            "average_caption": " avg_general_fan_out "}
+            "average_caption": " avg_general_fan_out "},
+        "calls": {
+            "caption": " CALLS ",
+            "average_caption": " avg_CALLS "},
+        "calling": {
+            "caption": " CALLING ",
+            "average_caption": " avg_CALLING "},
     }
 
     def __init__(self, context=None):
@@ -55,38 +40,58 @@ class xlizardExtension(ExtensionBase):
         self.context.current_function.tokens.append(token)
 
     def cross_file_process(self, fileinfos):
-        for fileinfo in fileinfos:
-            try:
-                new_funcs = {f.unqualified_name: f for f in
-                             fileinfo.function_list}
-                self.all_methods.update(new_funcs)
-                self._add_to_fan_outs(new_funcs.keys())
-                self._add_to_general_fan_out()
-                self._add_to_fan_ins(fileinfo.function_list)
-            except (AttributeError, TypeError, ValueError):
-                pass
+        files = list(fileinfos)
+        by_name = {}
+        for fileinfo in files:
+            for func in fileinfo.function_list:
+                if not hasattr(func, 'tokens'):
+                    func.tokens = []
+                func.calls = 0
+                func.calling = 0
+                func.fan_in = 0
+                func.fan_out = 0
+                func.general_fan_out = getattr(func, 'general_fan_out', 0) or 0
+                by_name[func.unqualified_name] = func
+
+        structures = set([
+            'if', 'else', 'elif', 'for', 'foreach', 'while', 'do', 'try',
+            'catch', 'switch', 'finally', 'except', 'with', 'case', 'return',
+            'goto', 'break', 'continue',
+        ])
+        punctuations = set(['(', ')', '{', '}', ';', ',', ':', '?', '=',
+                            '+', '-', '*', '/', '%', '&', '|', '!', '<', '>',
+                            '[', ']', '.', '->', '::'])
+
+        callee_map = {}
+        for name, func in by_name.items():
+            callees = set()
+            tokens = func.tokens or []
+            for idx, tok in enumerate(tokens):
+                if tok in by_name and tok != name:
+                    # Prefer tokens that look like calls: name (
+                    nxt = tokens[idx + 1] if idx + 1 < len(tokens) else None
+                    if nxt == '(' or tok not in structures:
+                        callees.add(tok)
+            # Also count general_fan_out style: identifier before '('
+            for idx, tok in enumerate(tokens):
+                if tok == '(' and idx > 0:
+                    prev = tokens[idx - 1]
+                    if (prev not in structures and prev not in punctuations
+                            and prev.isidentifier()):
+                        func.general_fan_out += 1
+            callee_map[name] = callees
+            func.calls = len(callees)
+            func.fan_out = func.calls
+
+        callers = {name: set() for name in by_name}
+        for name, callees in callee_map.items():
+            for callee in callees:
+                if callee in callers:
+                    callers[callee].add(name)
+
+        for name, func in by_name.items():
+            func.calling = len(callers[name])
+            func.fan_in = func.calling
+
+        for fileinfo in files:
             yield fileinfo
-
-    def _add_to_fan_outs(self, keys):
-        for other_func in self.all_methods.values():
-            intersect = Counter(keys) & Counter(other_func.tokens)
-            other_func.fan_out += len(list(intersect.elements()))
-
-    def _add_to_general_fan_out(self):
-        structures = set(['if', 'else', 'elif', 'for', 'foreach', 'while',
-                          'do', 'try', 'catch', 'switch', 'finally',
-                          'except', 'with'])
-        punctuations = set(['(', ')', '{', '}'])
-        for other_func in self.all_methods.values():
-            bracket_indexes = get_all_indices('(', other_func.tokens)
-            for idx in bracket_indexes[1:]:
-                # Suggestion ?
-                if other_func.tokens[idx - 1] not in (structures |
-                                                      punctuations):
-                    other_func.general_fan_out += 1
-
-    def _add_to_fan_ins(self, new_funcs):
-        for func in new_funcs:
-            for name in func.tokens:
-                if name in self.all_methods:
-                    self.all_methods[name].fan_in += 1

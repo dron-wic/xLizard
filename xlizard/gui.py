@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 Desktop UI for xLizard: выбор файла/папки и HTML-отчёт.
-Все метрики анализируются всегда; пороги — из thresholds.txt / панели.
+Пороги и тема — в xlizard.json рядом с программой.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import threading
@@ -16,6 +17,7 @@ from tkinter import (
     BooleanVar,
     Frame,
     IntVar,
+    Menu,
     StringVar,
     Tk,
     Toplevel,
@@ -26,20 +28,23 @@ from tkinter import (
 from tkinter.scrolledtext import ScrolledText
 
 from xlizard.thresholds import (
+    DEFAULT_HIS_METRICS,
+    DEFAULT_SOFT_PCT,
     DEFAULT_THRESHOLDS,
+    HIS_METRIC_KEYS,
     METRIC_HELP,
     METRIC_LABELS,
     METRIC_ORDER,
+    config_path,
+    load_app_config,
     metrics_about_tabs,
-    load_thresholds,
-    thresholds_path,
-    write_thresholds_file,
+    write_app_config,
 )
 
 
 APP_TITLE = "xLizard"
 SUPPORTED_EXTS = (".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".mm")
-THEME_FILENAME = "ui_theme.txt"
+HIS_METRIC_SET = frozenset(HIS_METRIC_KEYS)
 
 THEMES = {
     "dark": {
@@ -93,15 +98,46 @@ THEME_ICON_TIPS = {
 
 
 class _StdoutRedirect:
+    """File-like sink for print/tqdm/logging during GUI analysis."""
+
+    encoding = "utf-8"
+    errors = "replace"
+
     def __init__(self, write_fn):
         self._write_fn = write_fn
 
     def write(self, text):
         if text:
             self._write_fn(text)
+        return len(text) if text else 0
 
     def flush(self):
         pass
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        raise OSError("no fileno for GUI redirect")
+
+
+class _GuiLogHandler(logging.Handler):
+    """Forward logging records into the GUI journal."""
+
+    def __init__(self, write_fn):
+        super().__init__()
+        self._write_fn = write_fn
+        self.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        )
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            if msg:
+                self._write_fn(msg + "\n")
+        except Exception:
+            self.handleError(record)
 
 
 class _HoverTooltip:
@@ -181,44 +217,45 @@ class XLizardApp:
         self.output_var = StringVar()
         self.threads_var = IntVar(value=max(1, (os.cpu_count() or 2) // 2))
         self.open_browser_var = BooleanVar(value=True)
-        self.thresholds_file = thresholds_path()
-        self.thresholds = load_thresholds(create_if_missing=True)
+        self.config_file = config_path()
+        self.thresholds_file = self.config_file
+        cfg = load_app_config(create_if_missing=True)
+        self.thresholds = dict(cfg["thresholds"])
+        self.soft_pcts = dict(cfg["soft_pcts"])
+        self.his_metrics = bool(cfg.get("his_metrics", DEFAULT_HIS_METRICS))
+        self.his_metrics_var = BooleanVar(value=self.his_metrics)
         self.threshold_vars: dict[str, IntVar] = {}
+        self.soft_pct_vars: dict[str, IntVar] = {}
+        self._his_spinboxes: list = []
         for key in METRIC_ORDER:
             self.threshold_vars[key] = IntVar(
                 value=int(self.thresholds.get(key, DEFAULT_THRESHOLDS[key]))
             )
+            self.soft_pct_vars[key] = IntVar(
+                value=int(self.soft_pcts.get(key, DEFAULT_SOFT_PCT[key]))
+            )
 
         self._busy = False
         self._last_report: str | None = None
-        self.theme_name = self._load_theme_name()
+        self._thresholds_win: Toplevel | None = None
+        self._about_win: Toplevel | None = None
+        theme = str(cfg.get("theme", "dark")).lower()
+        self.theme_name = theme if theme in THEMES else "dark"
 
         self._build_style(self.theme_name)
         self._build_ui()
         self._center()
 
-    def _theme_path(self) -> Path:
-        from xlizard.thresholds import application_dir
-
-        return application_dir() / THEME_FILENAME
-
-    def _load_theme_name(self) -> str:
-        path = self._theme_path()
-        try:
-            raw = path.read_text(encoding="utf-8").strip().lower()
-            if raw in THEMES:
-                return raw
-            if raw in ("тёмная", "темная"):
-                return "dark"
-            if raw in ("светлая",):
-                return "light"
-        except OSError:
-            pass
-        return "dark"
-
     def _save_theme_name(self, name: str) -> None:
+        self.theme_name = name if name in THEMES else "dark"
         try:
-            self._theme_path().write_text(name + "\n", encoding="utf-8")
+            write_app_config(
+                self.config_file,
+                thresholds=self._current_thresholds(),
+                soft_pcts=self._current_soft_pcts(),
+                theme=self.theme_name,
+                his_metrics=bool(self.his_metrics_var.get()),
+            )
         except OSError:
             pass
 
@@ -413,7 +450,7 @@ class XLizardApp:
         ).pack(anchor="w", pady=(2, 0))
         ttk.Label(
             header,
-            text="Все метрики считаются всегда. Значение выше порога = превышение.",
+            text="Значение выше порога = превышение. Пакет HIS — опционально (окно «Пороги»).",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -443,49 +480,13 @@ class XLizardApp:
             variable=self.open_browser_var,
             style="Card.TCheckbutton",
         ).pack(side="left")
-        ttk.Button(opts, text="thresholds.txt", command=self._open_thresholds_file).pack(side="right")
-        ttk.Button(opts, text="Обновить пороги", command=self._reload_thresholds).pack(side="right", padx=(0, 6))
+        ttk.Button(opts, text="xlizard.json", command=self._open_thresholds_file).pack(side="right")
+        ttk.Button(opts, text="Пороги", command=self._show_thresholds_dialog).pack(
+            side="right", padx=(0, 6)
+        )
         ttk.Button(opts, text="О метриках", command=self._show_thresholds_origin).pack(
             side="right", padx=(0, 6)
         )
-
-        thr_card = ttk.Frame(outer, style="Card.TFrame")
-        thr_card.pack(fill="x", pady=4)
-        thr_head = ttk.Frame(thr_card, style="Card.TFrame")
-        thr_head.pack(fill="x", padx=10, pady=(6, 2))
-        ttk.Label(thr_head, text="Пороги метрик", style="Card.TLabel").pack(side="left")
-        ttk.Label(
-            thr_head,
-            text="наведите на название — подсказка",
-            style="Card.Muted.TLabel",
-        ).pack(side="left", padx=(8, 0))
-        ttk.Label(thr_head, text=str(self.thresholds_file), style="Card.Muted.TLabel").pack(
-            side="left", padx=(8, 0)
-        )
-
-        grid = ttk.Frame(thr_card, style="Card.TFrame")
-        grid.pack(fill="x", padx=8, pady=(2, 8))
-        cols = 3
-        for i, key in enumerate(METRIC_ORDER):
-            row, col = divmod(i, cols)
-            cell = ttk.Frame(grid, style="Card.TFrame")
-            cell.grid(row=row, column=col, sticky="ew", padx=4, pady=1)
-            label = ttk.Label(cell, text=METRIC_LABELS[key], style="Compact.TLabel", cursor="question_arrow")
-            label.pack(side="left", fill="x", expand=True)
-            help_text = METRIC_HELP.get(key, "")
-            if help_text:
-                default = int(DEFAULT_THRESHOLDS.get(key, 0))
-                tip = "%s\n\nБазовый порог: %s (значение выше = превышение)." % (help_text, default)
-                _HoverTooltip(label, tip)
-            ttk.Spinbox(
-                cell,
-                from_=0,
-                to=1000000,
-                textvariable=self.threshold_vars[key],
-                width=7,
-            ).pack(side="right")
-        for c in range(cols):
-            grid.columnconfigure(c, weight=1)
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(4, 2))
@@ -512,7 +513,10 @@ class XLizardApp:
         )
         self.progress.pack(padx=1, pady=1)
 
-        ttk.Label(outer, text="Журнал", style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+        log_hdr = ttk.Frame(outer)
+        log_hdr.pack(fill="x", pady=(4, 0))
+        ttk.Label(log_hdr, text="Журнал", style="Muted.TLabel").pack(side="left")
+        ttk.Button(log_hdr, text="Копировать", command=self._copy_log).pack(side="right")
         self.log = ScrolledText(
             outer,
             height=6,
@@ -522,9 +526,25 @@ class XLizardApp:
             relief="flat",
             font=("Consolas", 10),
             wrap="word",
+            undo=False,
         )
         self.log.pack(fill="both", expand=True, pady=(2, 0))
-        self.log.configure(state="disabled")
+        # Selectable / copyable; block typing so it stays a journal
+        self.log.bind("<Key>", self._log_block_edit)
+        self.log.bind("<<Paste>>", lambda _e: "break")
+        self.log.bind("<Control-c>", self._copy_log_selection_event)
+        self.log.bind("<Control-C>", self._copy_log_selection_event)
+        self.log.bind("<Control-a>", self._log_select_all)
+        self.log.bind("<Control-A>", self._log_select_all)
+        self.log.bind("<Button-3>", self._log_context_menu)
+        self._log_menu = Menu(self.root, tearoff=0)
+        self._log_menu.add_command(label="Копировать всё", command=self._copy_log)
+        self._log_menu.add_command(
+            label="Копировать выделенное", command=self._copy_log_selection
+        )
+        self._log_menu.add_separator()
+        self._log_menu.add_command(label="Выделить всё", command=self._log_select_all_cmd)
+        self._log_menu.add_command(label="Очистить", command=self._clear_log)
         self._log(
             "Выберите файл/папку и нажмите «Анализировать». "
             f"Расширения: {', '.join(SUPPORTED_EXTS)}\n"
@@ -538,21 +558,124 @@ class XLizardApp:
 
     def _log(self, text: str):
         def append():
-            self.log.configure(state="normal")
             self.log.insert("end", text)
             self.log.see("end")
-            self.log.configure(state="disabled")
 
         if threading.current_thread() is threading.main_thread():
             append()
         else:
             self.root.after(0, append)
 
+    def _log_block_edit(self, event):
+        # Allow shortcuts; block ordinary typing
+        if event.state & 0x4:  # Control
+            return None
+        if event.keysym in (
+            "Left", "Right", "Up", "Down", "Home", "End",
+            "Prior", "Next", "Shift_L", "Shift_R", "Control_L", "Control_R",
+        ):
+            return None
+        return "break"
+
+    def _copy_to_clipboard(self, text: str) -> bool:
+        text = text or ""
+        if not text.strip():
+            return False
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+            return True
+        except Exception:
+            return False
+
+    def _copy_log(self):
+        text = self.log.get("1.0", "end-1c")
+        if not self._copy_to_clipboard(text):
+            messagebox.showinfo(APP_TITLE, "Журнал пуст — нечего копировать.")
+
+    def _copy_log_selection(self):
+        try:
+            text = self.log.get("sel.first", "sel.last")
+        except Exception:
+            text = ""
+        if not text:
+            self._copy_log()
+            return
+        self._copy_to_clipboard(text)
+
+    def _copy_log_selection_event(self, _event=None):
+        self._copy_log_selection()
+        return "break"
+
+    def _log_select_all(self, _event=None):
+        self._log_select_all_cmd()
+        return "break"
+
+    def _log_select_all_cmd(self):
+        self.log.tag_add("sel", "1.0", "end-1c")
+        self.log.mark_set("insert", "1.0")
+        self.log.see("insert")
+
+    def _clear_log(self):
+        self.log.delete("1.0", "end")
+
+    def _log_context_menu(self, event):
+        try:
+            self._log_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._log_menu.grab_release()
+
+    def _install_gui_logging(self, redirect: _StdoutRedirect):
+        """Route logging into the journal; drop broken StreamHandlers (stderr=None)."""
+        fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        gui_handler = _GuiLogHandler(self._log)
+        gui_handler.setLevel(logging.INFO)
+
+        attached = []
+        for name in ("", "xlizard.sourcemonitor"):
+            log = logging.getLogger(name)
+            # Remove handlers whose stream is None (pythonw) or stale
+            for h in list(log.handlers):
+                stream = getattr(h, "stream", None)
+                if isinstance(h, logging.StreamHandler) and stream is None:
+                    log.removeHandler(h)
+            log.addHandler(gui_handler)
+            log.setLevel(logging.INFO)
+            attached.append(log)
+        # Also point sourcemonitor stream handlers at redirect if present
+        sm = logging.getLogger("xlizard.sourcemonitor")
+        for h in sm.handlers:
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, _GuiLogHandler):
+                try:
+                    h.setStream(redirect)
+                except Exception:
+                    h.stream = redirect
+                h.setFormatter(fmt)
+        return gui_handler, attached
+
+    def _uninstall_gui_logging(self, gui_handler, loggers):
+        for log in loggers:
+            try:
+                log.removeHandler(gui_handler)
+            except Exception:
+                pass
+
     def _reload_thresholds(self):
-        self.thresholds = load_thresholds(create_if_missing=True)
-        for key, var in self.threshold_vars.items():
-            var.set(int(self.thresholds.get(key, DEFAULT_THRESHOLDS[key])))
-        self._log("Пороги перечитаны из %s\n" % self.thresholds_file)
+        cfg = load_app_config(create_if_missing=True)
+        self.thresholds = dict(cfg["thresholds"])
+        self.soft_pcts = dict(cfg["soft_pcts"])
+        self.his_metrics = bool(cfg.get("his_metrics", DEFAULT_HIS_METRICS))
+        self.his_metrics_var.set(self.his_metrics)
+        for key in METRIC_ORDER:
+            self.threshold_vars[key].set(
+                int(self.thresholds.get(key, DEFAULT_THRESHOLDS[key]))
+            )
+            self.soft_pct_vars[key].set(
+                int(self.soft_pcts.get(key, DEFAULT_SOFT_PCT[key]))
+            )
+        self._sync_his_spinbox_state()
+        self._log("Настройки перечитаны из %s\n" % self.config_file)
 
     def _current_thresholds(self) -> dict:
         values = dict(DEFAULT_THRESHOLDS)
@@ -562,6 +685,42 @@ class XLizardApp:
             except (TypeError, ValueError):
                 values[key] = int(DEFAULT_THRESHOLDS[key])
         return values
+
+    def _current_soft_pcts(self) -> dict:
+        values = dict(DEFAULT_SOFT_PCT)
+        for key, var in self.soft_pct_vars.items():
+            try:
+                values[key] = max(1, min(100, int(var.get())))
+            except (TypeError, ValueError):
+                values[key] = int(DEFAULT_SOFT_PCT[key])
+        return values
+
+    def _persist_thresholds(self) -> dict:
+        thr = self._current_thresholds()
+        soft = self._current_soft_pcts()
+        his = bool(self.his_metrics_var.get())
+        try:
+            write_app_config(
+                self.config_file,
+                thresholds=thr,
+                soft_pcts=soft,
+                theme=self.theme_name,
+                his_metrics=his,
+            )
+        except OSError:
+            pass
+        self.thresholds = thr
+        self.soft_pcts = soft
+        self.his_metrics = his
+        return thr
+
+    def _sync_his_spinbox_state(self):
+        state = "normal" if self.his_metrics_var.get() else "disabled"
+        for widget in self._his_spinboxes:
+            try:
+                widget.configure(state=state)
+            except Exception:
+                pass
 
     def _pick_file(self):
         path = filedialog.askopenfilename(
@@ -645,20 +804,145 @@ class XLizardApp:
         ).start()
 
     def _open_thresholds_file(self):
-        path = Path(self.thresholds_file)
+        path = Path(self.config_file)
         if not path.is_file():
-            write_thresholds_file(path, self._current_thresholds())
+            write_app_config(
+                path,
+                thresholds=self._current_thresholds(),
+                soft_pcts=self._current_soft_pcts(),
+                theme=self.theme_name,
+                his_metrics=bool(self.his_metrics_var.get()),
+            )
         try:
             os.startfile(str(path))
         except OSError:
-            messagebox.showinfo(APP_TITLE, "Файл порогов:\n%s" % path)
+            messagebox.showinfo(APP_TITLE, "Файл настроек:\n%s" % path)
 
-    def _show_thresholds_origin(self):
+    def _show_thresholds_dialog(self):
+        if self._thresholds_win is not None and self._thresholds_win.winfo_exists():
+            self._thresholds_win.lift()
+            self._thresholds_win.focus_set()
+            return
+
         c = self._colors()
         win = Toplevel(self.root)
+        self._thresholds_win = win
+        win.title("Пороги метрик")
+        win.configure(bg=c["bg"])
+        win.transient(self.root)
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+
+        outer = ttk.Frame(win)
+        outer.pack(fill="both", expand=True, padx=12, pady=10)
+        ttk.Label(outer, text="Пороги метрик", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            outer,
+            text="Лимит — превышение при значении выше. Мягкое % — зона незначительного превышения для оценки.",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(2, 4))
+        ttk.Label(outer, text=str(self.config_file), style="Muted.TLabel").pack(anchor="w", pady=(0, 6))
+
+        his_row = ttk.Frame(outer)
+        his_row.pack(fill="x", pady=(0, 8))
+        his_cb = ttk.Checkbutton(
+            his_row,
+            text="HIS-метрики (GOTO / RETURN / PATH / CALLS / CALLING)",
+            variable=self.his_metrics_var,
+            command=self._sync_his_spinbox_state,
+        )
+        his_cb.pack(side="left")
+        ttk.Label(
+            his_row,
+            text="Считать и показывать в HTML только при включении",
+            style="Muted.TLabel",
+        ).pack(side="left", padx=(10, 0))
+
+        card = ttk.Frame(outer, style="Card.TFrame")
+        card.pack(fill="both", expand=True)
+        header = ttk.Frame(card, style="Card.TFrame")
+        header.pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Label(header, text="Метрика", style="Card.TLabel", width=36).pack(side="left")
+        ttk.Label(header, text="Лимит", style="Card.TLabel", width=8).pack(side="left")
+        ttk.Label(header, text="Мягкое, %", style="Card.TLabel", width=10).pack(side="left")
+
+        self._his_spinboxes = []
+        for key in METRIC_ORDER:
+            row = ttk.Frame(card, style="Card.TFrame")
+            row.pack(fill="x", padx=6, pady=1)
+            label = ttk.Label(
+                row,
+                text=METRIC_LABELS[key],
+                style="Compact.TLabel",
+                width=36,
+                cursor="question_arrow",
+            )
+            label.pack(side="left")
+            help_text = METRIC_HELP.get(key, "")
+            if help_text:
+                tip = (
+                    "%s\n\nЛимит по умолчанию: %s. Мягкое %%: насколько выше лимита "
+                    "ещё считается незначительным превышением."
+                    % (help_text, int(DEFAULT_THRESHOLDS.get(key, 0)))
+                )
+                _HoverTooltip(label, tip)
+            lim = ttk.Spinbox(
+                row,
+                from_=0,
+                to=1000000,
+                textvariable=self.threshold_vars[key],
+                width=8,
+            )
+            lim.pack(side="left", padx=(4, 8))
+            soft = ttk.Spinbox(
+                row,
+                from_=1,
+                to=100,
+                textvariable=self.soft_pct_vars[key],
+                width=8,
+            )
+            soft.pack(side="left")
+            if key in HIS_METRIC_SET:
+                self._his_spinboxes.extend([lim, soft])
+
+        self._sync_his_spinbox_state()
+
+        def save_and_close():
+            self._persist_thresholds()
+            self._log("Настройки сохранены в %s\n" % self.config_file)
+            win.destroy()
+
+        def reload_into_dialog():
+            self._reload_thresholds()
+
+        btns = ttk.Frame(outer)
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="Закрыть", command=win.destroy).pack(side="right")
+        ttk.Button(btns, text="Сохранить", command=save_and_close).pack(side="right", padx=(0, 6))
+        ttk.Button(btns, text="Перечитать", command=reload_into_dialog).pack(side="right", padx=(0, 6))
+        ttk.Button(btns, text="Открыть файл", command=self._open_thresholds_file).pack(
+            side="left"
+        )
+
+        win.minsize(640, 640)
+        win.geometry(
+            "720x700+%d+%d"
+            % (self.root.winfo_rootx() + 40, self.root.winfo_rooty() + 40)
+        )
+        win.focus_set()
+
+    def _show_thresholds_origin(self):
+        if self._about_win is not None and self._about_win.winfo_exists():
+            self._about_win.lift()
+            self._about_win.focus_set()
+            return
+
+        c = self._colors()
+        win = Toplevel(self.root)
+        self._about_win = win
         win.title("О метриках")
         win.configure(bg=c["bg"])
         win.transient(self.root)
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
 
         outer = ttk.Frame(win)
         outer.pack(fill="both", expand=True, padx=12, pady=10)
@@ -694,25 +978,19 @@ class XLizardApp:
         btns.pack(fill="x", pady=(10, 0))
         ttk.Button(btns, text="Закрыть", command=win.destroy).pack(side="right")
 
-        # Size matched to the approved screenshot (tabs fit, «Закрыть» visible).
-        win.minsize(720, 600)
+        # Size matched to approved screenshot with HIS tabs (≈1024×677).
+        win.minsize(960, 620)
         win.geometry(
-            "753x652+%d+%d"
+            "1024x677+%d+%d"
             % (self.root.winfo_rootx() + 40, self.root.winfo_rooty() + 40)
         )
         win.focus_set()
-        win.grab_set()
 
     def _run_analysis(self, target: str, output: str):
         from xlizard.thresholds import sync_sourcemonitor_config
         from xlizard.xlizard import main as xlizard_main
 
-        thr = self._current_thresholds()
-        # Persist current UI values so thresholds.txt stays in sync
-        try:
-            write_thresholds_file(self.thresholds_file, thr)
-        except OSError:
-            pass
+        thr = self._persist_thresholds()
         sync_sourcemonitor_config(thr)
 
         argv = [
@@ -740,8 +1018,14 @@ class XLizardApp:
 
         old_out, old_err = sys.stdout, sys.stderr
         redirect = _StdoutRedirect(self._log)
+        # Frozen GUI (pythonw): stdout/stderr may be None — give logging a sink
+        if old_out is None:
+            old_out = redirect
+        if old_err is None:
+            old_err = redirect
         sys.stdout = redirect
         sys.stderr = redirect
+        gui_handler, loggers = self._install_gui_logging(redirect)
         exit_code = 0
         error = None
         try:
@@ -753,8 +1037,9 @@ class XLizardApp:
                 error = traceback.format_exc()
                 exit_code = 2
         finally:
-            sys.stdout = old_out
-            sys.stderr = old_err
+            self._uninstall_gui_logging(gui_handler, loggers)
+            sys.stdout = old_out if old_out is not redirect else sys.__stdout__
+            sys.stderr = old_err if old_err is not redirect else sys.__stderr__
 
         self.root.after(0, lambda: self._finish(output, exit_code, error))
 
