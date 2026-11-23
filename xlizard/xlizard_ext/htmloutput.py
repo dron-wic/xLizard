@@ -917,12 +917,19 @@ def html_output(result, options, *_):
     full_thresholds.update(getattr(options, 'thresholds', {}) or {})
 
     from xlizard.thresholds import DEFAULT_SOFT_PCT
-    from xlizard.quality_score import compute_quality_score
+    from xlizard.quality_score import compute_quality_score, normalize_quality_weights
     soft_pcts = dict(DEFAULT_SOFT_PCT)
     soft_pcts.update(getattr(options, 'file_soft_pcts', None) or {})
     his_metrics = bool(getattr(options, 'his_metrics', False))
+    quality_weights = normalize_quality_weights(
+        getattr(options, 'quality_score_weights', None)
+    )
     quality = compute_quality_score(
-        file_list, full_thresholds, soft_pcts, his_enabled=his_metrics
+        file_list,
+        full_thresholds,
+        soft_pcts,
+        his_enabled=his_metrics,
+        weights=quality_weights,
     )
     
     # Prepare dashboard data
@@ -1201,7 +1208,7 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
         color: var(--text-primary);
         line-height: 1.5;
         min-height: 100vh;
-        overflow-x: hidden;
+        overflow-x: auto;
         transition: all 0.3s ease;
     }
 
@@ -1460,6 +1467,28 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
         margin-bottom: 0.25rem;
     }
 
+    .quality-formula {
+        margin-top: 0.75rem;
+        padding: 0.75rem 0.9rem;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--glass-border);
+        font-family: 'Consolas', 'Fira Code', monospace;
+        font-size: 0.82rem;
+        line-height: 1.45;
+        color: var(--text-primary);
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    .quality-formula-note {
+        margin-top: 0.4rem;
+        font-family: 'Segoe UI', 'Inter', sans-serif;
+        font-size: 0.8rem;
+        color: var(--text-secondary);
+        white-space: normal;
+    }
+
     .quality-top-hint {
         color: var(--text-secondary);
         font-size: 0.85rem;
@@ -1684,11 +1713,23 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
     }
 
     .file-content.expanded {
-        max-height: 2000px;
+        max-height: none;
+        overflow-x: auto;
+        overflow-y: visible;
+    }
+
+    .table-scroll {
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: visible;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 0.35rem;
     }
 
     .file-table {
-        width: 100%;
+        width: max-content;
+        min-width: 100%;
         border-collapse: collapse;
         font-size: 0.9rem;
     }
@@ -1703,11 +1744,13 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
         letter-spacing: 0.05em;
         background: rgba(255, 255, 255, 0.05);
         border-bottom: 1px solid var(--glass-border);
+        white-space: nowrap;
     }
 
     .file-table td {
         padding: 0.75rem 1.5rem;
         border-bottom: 1px solid var(--glass-border);
+        white-space: nowrap;
     }
 
     .file-table tr:last-child td {
@@ -2062,7 +2105,7 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
             <div class="glass-card quality-card">
                 <div class="card-header">
                     <h3 class="card-title">Суммарная оценка качества</h3>
-                    <div class="tooltip-icon" data-tooltip="Балл 0–100 по порогам из xlizard.json / «Пороги». Мягкое превышение — не более soft% над лимитом конкретной метрики (см. подсказки колонок и топ превышений). Жёсткое — сильнее. Незначительные превышения оставляют «Допустимо», но помечаются бейджем.">?</div>
+                    <div class="tooltip-icon" data-tooltip="Балл 0–100 по порогам из xlizard.json / «Пороги». Формула и веса настраиваются в quality_score. Мягкое превышение — не более soft% над лимитом метрики. Жёсткое — сильнее.">?</div>
                 </div>
                 <div class="quality-body">
                     <div class="quality-score-block">
@@ -2094,6 +2137,12 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                         {% endif %}
                         <div class="quality-meta">
                             Мягких: {{ quality.soft_count }} · Жёстких: {{ quality.hard_count }} · Функций: {{ quality.total_functions }}
+                            · Доля мягк. {{ (quality.soft_func_rate * 100)|round(1) }}%
+                            · Доля жёстк. {{ (quality.hard_func_rate * 100)|round(1) }}%
+                            · Штраф файлов: {{ quality.file_penalty|default(0)|round(1) }}
+                        </div>
+                        <div class="quality-formula">{{ quality.formula }}
+<div class="quality-formula-note">{{ quality.formula_detail }} Веса: мягк.ф.={{ quality.weights.soft_func_weight }}, жёстк.ф.={{ quality.weights.hard_func_weight }}, файл мягк.={{ quality.weights.file_soft_penalty }}, файл жёстк.={{ quality.weights.file_hard_penalty }}, потолок={{ quality.weights.file_penalty_cap }}. Изменить: «Пороги» или xlizard.json → quality_score.</div>
                         </div>
                         {% if quality.top_exceedances %}
                         <ul class="quality-top-list">
@@ -2250,6 +2299,7 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                         
                         <div class="file-content">
                             {% if file.functions %}
+                            <div class="table-scroll">
                             <table class="file-table">
                                 <thead>
                                     <tr>
@@ -2359,6 +2409,7 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                                     {% endfor %}
                                 </tbody>
                             </table>
+                            </div>
                             {% else %}
                             <div style="padding: 2rem; text-align: center; color: var(--text-secondary);">
                                 Функции не найдены
@@ -2378,7 +2429,7 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                 <div class="card-header">
                     <h3 class="card-title">Самые сложные функции</h3>
                 </div>
-                <div style="overflow-x: auto;">
+                <div class="table-scroll">
                     <table class="file-table">
                         <thead>
                             <tr>
@@ -2742,8 +2793,16 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
         content.classList.toggle('expanded');
         
         if (isExpanding) {
-            content.style.maxHeight = content.scrollHeight + 'px';
+            content.style.maxHeight = (content.scrollHeight + 24) + 'px';
+            // After transition: allow full height so wide tables can scroll horizontally
+            setTimeout(function() {
+                if (content.classList.contains('expanded')) {
+                    content.style.maxHeight = 'none';
+                }
+            }, 320);
         } else {
+            content.style.maxHeight = content.scrollHeight + 'px';
+            void content.offsetHeight;
             content.style.maxHeight = '0';
         }
     }

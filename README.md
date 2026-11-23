@@ -1,6 +1,6 @@
 # xLizard - Extended Metric Analyzer
 
-![Version](https://img.shields.io/badge/version-1.1.8-blue.svg)
+![Version](https://img.shields.io/badge/version-1.1.9-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-red.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
 ![Python](https://img.shields.io/badge/python-3.8%2B-green.svg)
@@ -98,18 +98,29 @@ xLizard основан на [Lizard](https://github.com/terryyin/lizard) (Terry 
 
 #### Формула балла
 
+Формула **явно показана** на вкладке HTML «Обзор». Веса настраиваются в **«Пороги»** (блок «Оценка качества») или в `xlizard.json` → `quality_score`:
+
+```json
+"quality_score": {
+  "soft_func_weight": 15,
+  "hard_func_weight": 45,
+  "file_soft_penalty": 2,
+  "file_hard_penalty": 6,
+  "file_penalty_cap": 20
+}
+```
+
 ```
 score = 100
-      − 15 × (доля функций с мягким превышением)
-      − 45 × (доля функций с жёстким превышением)
-      − min(20, 2×N_soft_file + 6×N_hard_file)
+      − soft_func_weight × (доля функций с мягким превышением)
+      − hard_func_weight × (доля функций с жёстким превышением)
+      − min(file_penalty_cap,
+            file_soft_penalty×N_soft_file + file_hard_penalty×N_hard_file)
 ```
 
 - Доли считаются от числа **активных** функций.
-- Файловый штраф: +2 за каждое мягкое и +6 за каждое жёсткое файловое превышение, потолок **20**.
 - Итог округляется и ограничивается диапазоном **0…100**.
-
-Примеры смысла весов: одна жёсткая функция из десяти снимает ~4.5 балла; мягкая — ~1.5. Жёсткие нарушения бьют по баллу сильнее мягких.
+- По умолчанию: одна жёсткая функция из десяти снимает ~4.5 балла; мягкая — ~1.5.
 
 #### Статусы
 

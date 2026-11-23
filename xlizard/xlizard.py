@@ -1049,12 +1049,18 @@ def parse_args(argv):
         opt.file_soft_pcts.update(file_soft_pcts)
         opt.his_metrics = his_metrics
         opt.ui_theme = app_cfg.get("theme", "dark")
+        from .quality_score import normalize_quality_weights
+        opt.quality_score_weights = normalize_quality_weights(
+            app_cfg.get("quality_score")
+        )
     except Exception as exc:  # pragma: no cover
         sys.stderr.write("Warning: could not load xlizard.json (%s)\n" % exc)
         opt.file_thresholds = dict(opt.thresholds)
         from .thresholds import DEFAULT_SOFT_PCT as _SOFT
         opt.file_soft_pcts = dict(_SOFT)
         opt.his_metrics = False
+        from .quality_score import DEFAULT_QUALITY_WEIGHTS as _QW
+        opt.quality_score_weights = dict(_QW)
 
     opt.extensions = get_extensions(
         _ensure_core_metric_extensions(opt.extensions, his_metrics=his_metrics)

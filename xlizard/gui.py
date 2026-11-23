@@ -27,8 +27,15 @@ from tkinter import (
 )
 from tkinter.scrolledtext import ScrolledText
 
+from xlizard.quality_score import (
+    DEFAULT_QUALITY_WEIGHTS,
+    QUALITY_WEIGHT_LABELS,
+    QUALITY_WEIGHT_ORDER,
+    format_quality_formula,
+)
 from xlizard.thresholds import (
     DEFAULT_HIS_METRICS,
+    DEFAULT_QUALITY_SCORE,
     DEFAULT_SOFT_PCT,
     DEFAULT_THRESHOLDS,
     HIS_METRIC_KEYS,
@@ -224,8 +231,10 @@ class XLizardApp:
         self.soft_pcts = dict(cfg["soft_pcts"])
         self.his_metrics = bool(cfg.get("his_metrics", DEFAULT_HIS_METRICS))
         self.his_metrics_var = BooleanVar(value=self.his_metrics)
+        self.quality_weights = dict(cfg.get("quality_score") or DEFAULT_QUALITY_SCORE)
         self.threshold_vars: dict[str, IntVar] = {}
         self.soft_pct_vars: dict[str, IntVar] = {}
+        self.quality_weight_vars: dict[str, IntVar] = {}
         self._his_spinboxes: list = []
         for key in METRIC_ORDER:
             self.threshold_vars[key] = IntVar(
@@ -233,6 +242,14 @@ class XLizardApp:
             )
             self.soft_pct_vars[key] = IntVar(
                 value=int(self.soft_pcts.get(key, DEFAULT_SOFT_PCT[key]))
+            )
+        for key in QUALITY_WEIGHT_ORDER:
+            self.quality_weight_vars[key] = IntVar(
+                value=int(
+                    self.quality_weights.get(
+                        key, DEFAULT_QUALITY_WEIGHTS.get(key, DEFAULT_QUALITY_SCORE[key])
+                    )
+                )
             )
 
         self._busy = False
@@ -255,6 +272,7 @@ class XLizardApp:
                 soft_pcts=self._current_soft_pcts(),
                 theme=self.theme_name,
                 his_metrics=bool(self.his_metrics_var.get()),
+                quality_score=self._current_quality_weights(),
             )
         except OSError:
             pass
@@ -667,12 +685,21 @@ class XLizardApp:
         self.soft_pcts = dict(cfg["soft_pcts"])
         self.his_metrics = bool(cfg.get("his_metrics", DEFAULT_HIS_METRICS))
         self.his_metrics_var.set(self.his_metrics)
+        self.quality_weights = dict(cfg.get("quality_score") or DEFAULT_QUALITY_SCORE)
         for key in METRIC_ORDER:
             self.threshold_vars[key].set(
                 int(self.thresholds.get(key, DEFAULT_THRESHOLDS[key]))
             )
             self.soft_pct_vars[key].set(
                 int(self.soft_pcts.get(key, DEFAULT_SOFT_PCT[key]))
+            )
+        for key in QUALITY_WEIGHT_ORDER:
+            self.quality_weight_vars[key].set(
+                int(
+                    self.quality_weights.get(
+                        key, DEFAULT_QUALITY_WEIGHTS.get(key, DEFAULT_QUALITY_SCORE[key])
+                    )
+                )
             )
         self._sync_his_spinbox_state()
         self._log("Настройки перечитаны из %s\n" % self.config_file)
@@ -695,10 +722,20 @@ class XLizardApp:
                 values[key] = int(DEFAULT_SOFT_PCT[key])
         return values
 
+    def _current_quality_weights(self) -> dict:
+        values = dict(DEFAULT_QUALITY_SCORE)
+        for key, var in self.quality_weight_vars.items():
+            try:
+                values[key] = max(0, int(var.get()))
+            except (TypeError, ValueError):
+                values[key] = int(DEFAULT_QUALITY_SCORE[key])
+        return values
+
     def _persist_thresholds(self) -> dict:
         thr = self._current_thresholds()
         soft = self._current_soft_pcts()
         his = bool(self.his_metrics_var.get())
+        quality = self._current_quality_weights()
         try:
             write_app_config(
                 self.config_file,
@@ -706,12 +743,14 @@ class XLizardApp:
                 soft_pcts=soft,
                 theme=self.theme_name,
                 his_metrics=his,
+                quality_score=quality,
             )
         except OSError:
             pass
         self.thresholds = thr
         self.soft_pcts = soft
         self.his_metrics = his
+        self.quality_weights = quality
         return thr
 
     def _sync_his_spinbox_state(self):
@@ -812,6 +851,7 @@ class XLizardApp:
                 soft_pcts=self._current_soft_pcts(),
                 theme=self.theme_name,
                 his_metrics=bool(self.his_metrics_var.get()),
+                quality_score=self._current_quality_weights(),
             )
         try:
             os.startfile(str(path))
@@ -857,8 +897,38 @@ class XLizardApp:
             style="Muted.TLabel",
         ).pack(side="left", padx=(10, 0))
 
-        card = ttk.Frame(outer, style="Card.TFrame")
-        card.pack(fill="both", expand=True)
+        scroll_wrap = ttk.Frame(outer)
+        scroll_wrap.pack(fill="both", expand=True)
+        from tkinter import Canvas
+
+        canvas_widget = Canvas(scroll_wrap, bg=c["bg"], highlightthickness=0)
+        vscroll = ttk.Scrollbar(scroll_wrap, orient="vertical", command=canvas_widget.yview)
+        canvas_widget.configure(yscrollcommand=vscroll.set)
+        vscroll.pack(side="right", fill="y")
+        canvas_widget.pack(side="left", fill="both", expand=True)
+        card = ttk.Frame(canvas_widget, style="Card.TFrame")
+        card_id = canvas_widget.create_window((0, 0), window=card, anchor="nw")
+
+        def _on_card_configure(_event=None):
+            canvas_widget.configure(scrollregion=canvas_widget.bbox("all"))
+
+        def _on_canvas_configure(event):
+            canvas_widget.itemconfigure(card_id, width=event.width)
+
+        card.bind("<Configure>", _on_card_configure)
+        canvas_widget.bind("<Configure>", _on_canvas_configure)
+
+        def _wheel(event):
+            delta = -1 if event.delta > 0 else 1
+            if getattr(event, "num", None) == 4:
+                delta = -1
+            elif getattr(event, "num", None) == 5:
+                delta = 1
+            canvas_widget.yview_scroll(delta, "units")
+
+        canvas_widget.bind_all("<MouseWheel>", _wheel)
+        win.bind("<Destroy>", lambda _e: canvas_widget.unbind_all("<MouseWheel>"), add="+")
+
         header = ttk.Frame(card, style="Card.TFrame")
         header.pack(fill="x", padx=6, pady=(6, 2))
         ttk.Label(header, text="Метрика", style="Card.TLabel", width=36).pack(side="left")
@@ -906,6 +976,44 @@ class XLizardApp:
 
         self._sync_his_spinbox_state()
 
+        q_sep = ttk.Frame(card, style="Card.TFrame")
+        q_sep.pack(fill="x", padx=6, pady=(12, 4))
+        ttk.Label(q_sep, text="Оценка качества (формула)", style="Card.TLabel").pack(
+            anchor="w"
+        )
+        formula_lbl = ttk.Label(
+            q_sep,
+            text=format_quality_formula(self._current_quality_weights()),
+            style="Muted.TLabel",
+            wraplength=640,
+        )
+        formula_lbl.pack(anchor="w", pady=(2, 6))
+
+        def _refresh_formula(*_args):
+            formula_lbl.configure(
+                text=format_quality_formula(self._current_quality_weights())
+            )
+
+        for key in QUALITY_WEIGHT_ORDER:
+            row = ttk.Frame(card, style="Card.TFrame")
+            row.pack(fill="x", padx=6, pady=1)
+            ttk.Label(
+                row,
+                text=QUALITY_WEIGHT_LABELS.get(key, key),
+                style="Compact.TLabel",
+                width=36,
+            ).pack(side="left")
+            spin = ttk.Spinbox(
+                row,
+                from_=0,
+                to=200,
+                textvariable=self.quality_weight_vars[key],
+                width=8,
+                command=_refresh_formula,
+            )
+            spin.pack(side="left", padx=(4, 8))
+            self.quality_weight_vars[key].trace_add("write", _refresh_formula)
+
         def save_and_close():
             self._persist_thresholds()
             self._log("Настройки сохранены в %s\n" % self.config_file)
@@ -913,6 +1021,7 @@ class XLizardApp:
 
         def reload_into_dialog():
             self._reload_thresholds()
+            _refresh_formula()
 
         btns = ttk.Frame(outer)
         btns.pack(fill="x", pady=(10, 0))
@@ -923,9 +1032,9 @@ class XLizardApp:
             side="left"
         )
 
-        win.minsize(640, 640)
+        win.minsize(660, 680)
         win.geometry(
-            "720x700+%d+%d"
+            "740x760+%d+%d"
             % (self.root.winfo_rootx() + 40, self.root.winfo_rooty() + 40)
         )
         win.focus_set()

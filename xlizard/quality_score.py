@@ -38,6 +38,31 @@ FILE_METRICS: Tuple[str, ...] = (
     "function_count",
 )
 
+# Weights for the 0–100 score (editable via xlizard.json / «Пороги»)
+DEFAULT_QUALITY_WEIGHTS: Dict[str, float] = {
+    "soft_func_weight": 15.0,  # −W × (доля функций только с мягким превышением)
+    "hard_func_weight": 45.0,  # −W × (доля функций с жёстким превышением)
+    "file_soft_penalty": 2.0,  # −P за каждое мягкое файловое превышение
+    "file_hard_penalty": 6.0,  # −P за каждое жёсткое файловое превышение
+    "file_penalty_cap": 20.0,  # потолок суммарного файлового штрафа
+}
+
+QUALITY_WEIGHT_LABELS: Dict[str, str] = {
+    "soft_func_weight": "Вес мягких функций",
+    "hard_func_weight": "Вес жёстких функций",
+    "file_soft_penalty": "Штраф за мягкое (файл)",
+    "file_hard_penalty": "Штраф за жёсткое (файл)",
+    "file_penalty_cap": "Потолок файлового штрафа",
+}
+
+QUALITY_WEIGHT_ORDER: Tuple[str, ...] = (
+    "soft_func_weight",
+    "hard_func_weight",
+    "file_soft_penalty",
+    "file_hard_penalty",
+    "file_penalty_cap",
+)
+
 # Map quality keys → fields on function / file dicts
 _FUNC_FIELD = {
     "cyclomatic_complexity": "cyclomatic_complexity",
@@ -71,6 +96,45 @@ def _as_number(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def normalize_quality_weights(raw: Optional[Mapping[str, Any]] = None) -> Dict[str, float]:
+    """Clamp and fill quality-score weights from JSON / GUI."""
+    out = dict(DEFAULT_QUALITY_WEIGHTS)
+    if not isinstance(raw, Mapping):
+        return out
+    for key in QUALITY_WEIGHT_ORDER:
+        if key not in raw:
+            continue
+        num = _as_number(raw[key])
+        if num is None:
+            continue
+        if key == "file_penalty_cap":
+            out[key] = max(0.0, min(100.0, num))
+        else:
+            out[key] = max(0.0, min(200.0, num))
+    return out
+
+
+def format_quality_formula(weights: Optional[Mapping[str, float]] = None) -> str:
+    """Human-readable formula with current weights (for HTML / docs)."""
+    w = normalize_quality_weights(weights)
+    return (
+        "Балл = 100 − {soft}×(доля мягких функций) − {hard}×(доля жёстких функций) "
+        "− min({cap}, {fs}×Nмягк.файл + {fh}×Nжёстк.файл)"
+    ).format(
+        soft=_fmt_num(w["soft_func_weight"]),
+        hard=_fmt_num(w["hard_func_weight"]),
+        cap=_fmt_num(w["file_penalty_cap"]),
+        fs=_fmt_num(w["file_soft_penalty"]),
+        fh=_fmt_num(w["file_hard_penalty"]),
+    )
+
+
+def _fmt_num(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return ("%g" % value)
 
 
 def _function_length(func: Mapping[str, Any]) -> float:
@@ -113,11 +177,13 @@ def compute_quality_score(
     soft_pcts: Optional[Mapping[str, float]] = None,
     *,
     his_enabled: bool = False,
+    weights: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
     """
     Compute 0–100 quality score for an analyzed project.
 
-    Returns dict with score, status, badge flag, counts, and top exceedances.
+    Returns dict with score, status, badge flag, counts, top exceedances,
+    and the formula/weights used.
     """
     limits = dict(DEFAULT_THRESHOLDS)
     if thresholds:
@@ -125,6 +191,7 @@ def compute_quality_score(
     soft = dict(DEFAULT_SOFT_PCT)
     if soft_pcts:
         soft.update(soft_pcts)
+    w = normalize_quality_weights(weights)
 
     func_metrics = list(FUNCTION_METRICS)
     if his_enabled:
@@ -197,8 +264,15 @@ def compute_quality_score(
 
     soft_func_rate = (soft_func_hits / total_functions) if total_functions else 0.0
     hard_func_rate = (hard_func_hits / total_functions) if total_functions else 0.0
-    file_penalty = min(20.0, 2.0 * file_soft + 6.0 * file_hard)
-    score = 100.0 - (15.0 * soft_func_rate + 45.0 * hard_func_rate) - file_penalty
+    file_penalty_raw = (
+        w["file_soft_penalty"] * file_soft + w["file_hard_penalty"] * file_hard
+    )
+    file_penalty = min(w["file_penalty_cap"], file_penalty_raw)
+    score = (
+        100.0
+        - (w["soft_func_weight"] * soft_func_rate + w["hard_func_weight"] * hard_func_rate)
+        - file_penalty
+    )
     score = int(round(max(0.0, min(100.0, score))))
 
     exceedance_count = sum(soft_by_metric.values()) + sum(hard_by_metric.values())
@@ -237,6 +311,8 @@ def compute_quality_score(
         for metric, soft_n, hard_n in ranked[:6]
     ]
 
+    formula_text = format_quality_formula(w)
+
     return {
         "score": score,
         "status": status,
@@ -248,7 +324,18 @@ def compute_quality_score(
         "total_functions": total_functions,
         "soft_func_rate": soft_func_rate,
         "hard_func_rate": hard_func_rate,
+        "file_soft": file_soft,
+        "file_hard": file_hard,
+        "file_penalty": file_penalty,
         "top_exceedances": top_exceedances,
         "soft_by_metric": dict(soft_by_metric),
         "hard_by_metric": dict(hard_by_metric),
+        "weights": w,
+        "formula": formula_text,
+        "formula_detail": (
+            "Мягкое превышение — value выше limit, но не больше soft_pct%% от limit; "
+            "жёсткое — сильнее (при limit=0 любое value>0 жёсткое). "
+            "Доли — от числа активных функций. Настройка весов: xlizard.json → "
+            "quality_score или окно «Пороги»."
+        ),
     }

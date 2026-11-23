@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-from xlizard.quality_score import compute_quality_score
+from xlizard.quality_score import (
+    DEFAULT_QUALITY_WEIGHTS,
+    compute_quality_score,
+    format_quality_formula,
+    normalize_quality_weights,
+)
 from xlizard.thresholds import DEFAULT_SOFT_PCT, DEFAULT_THRESHOLDS
 
 
@@ -109,3 +114,31 @@ def test_his_goto_hard_when_enabled():
     assert result["hard_by_metric"].get("goto_count", 0) == 1
     assert result["has_exceedances"] is True
     assert result["score"] < 100
+
+
+def test_formula_text_contains_weights():
+    text = format_quality_formula(DEFAULT_QUALITY_WEIGHTS)
+    assert "Балл = 100" in text
+    assert "15" in text
+    assert "45" in text
+    result = compute_quality_score([_file()], DEFAULT_THRESHOLDS, DEFAULT_SOFT_PCT)
+    assert result["formula"] == text
+    assert "weights" in result
+
+
+def test_custom_weights_change_score():
+    files = [_file(functions=[_func(cyclomatic_complexity=18)])]
+    mild = compute_quality_score(
+        files,
+        DEFAULT_THRESHOLDS,
+        DEFAULT_SOFT_PCT,
+        weights={"soft_func_weight": 5, "hard_func_weight": 10},
+    )
+    harsh = compute_quality_score(
+        files,
+        DEFAULT_THRESHOLDS,
+        DEFAULT_SOFT_PCT,
+        weights={"soft_func_weight": 80, "hard_func_weight": 90},
+    )
+    assert mild["score"] > harsh["score"]
+    assert normalize_quality_weights({"soft_func_weight": -5})["soft_func_weight"] == 0

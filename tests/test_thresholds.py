@@ -47,6 +47,8 @@ def test_load_creates_json(tmp_path, monkeypatch):
     assert "metrics" in raw
     assert "features" in raw
     assert raw["features"]["his_metrics"] is False
+    assert "quality_score" in raw
+    assert raw["quality_score"]["soft_func_weight"] == 15
 
 
 def test_migrate_from_legacy_txt(tmp_path, monkeypatch):
@@ -68,18 +70,23 @@ def test_write_json_roundtrip(tmp_path):
         soft_pcts={"cyclomatic_complexity": 12},
         theme="light",
         his_metrics=True,
+        quality_score={"soft_func_weight": 20, "hard_func_weight": 50},
     )
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert raw["metrics"]["cyclomatic_complexity"]["limit"] == 33
     assert raw["metrics"]["cyclomatic_complexity"]["soft_pct"] == 12
     assert raw["theme"] == "light"
     assert raw["features"]["his_metrics"] is True
+    assert raw["quality_score"]["soft_func_weight"] == 20
+    assert raw["quality_score"]["hard_func_weight"] == 50
     for key in HIS_METRIC_KEYS:
         assert key in raw["metrics"]
 
     limits, soft = load_threshold_config(str(path), create_if_missing=False)
     assert limits["cyclomatic_complexity"] == 33
     assert soft["cyclomatic_complexity"] == 12
+    cfg = load_app_config(str(path), create_if_missing=False)
+    assert cfg["quality_score"]["soft_func_weight"] == 20
 
 
 def test_soft_pct_aliases_legacy_text():

@@ -4,6 +4,13 @@
   "features": {
     "his_metrics": false
   },
+  "quality_score": {
+    "soft_func_weight": 15,
+    "hard_func_weight": 45,
+    "file_soft_penalty": 2,
+    "file_hard_penalty": 6,
+    "file_penalty_cap": 20
+  },
   "metrics": {
     "cyclomatic_complexity": {
       "limit": 15,

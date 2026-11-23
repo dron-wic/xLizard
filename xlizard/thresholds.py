@@ -713,6 +713,15 @@ SOFT_PCT_SUFFIX = "_soft_pct"
 DEFAULT_HIS_METRICS = False
 DEFAULT_THEME = "dark"
 
+# Quality score formula weights (also in xlizard.quality_score.DEFAULT_QUALITY_WEIGHTS)
+DEFAULT_QUALITY_SCORE: Dict[str, float] = {
+    "soft_func_weight": 15,
+    "hard_func_weight": 45,
+    "file_soft_penalty": 2,
+    "file_hard_penalty": 6,
+    "file_penalty_cap": 20,
+}
+
 
 def soft_pct_key(metric: str) -> str:
     return "%s%s" % (metric, SOFT_PCT_SUFFIX)
@@ -807,6 +816,7 @@ def default_app_config() -> Dict[str, Any]:
         "theme": DEFAULT_THEME,
         "features": {"his_metrics": DEFAULT_HIS_METRICS},
         "metrics": metrics,
+        "quality_score": dict(DEFAULT_QUALITY_SCORE),
     }
 
 
@@ -933,6 +943,17 @@ def _migrate_legacy_files(base_dir: Path) -> Optional[Dict[str, Any]]:
     return cfg if changed else None
 
 
+def _normalize_quality_score_section(raw: Any) -> Dict[str, float]:
+    """Merge JSON quality_score block with defaults (int-friendly)."""
+    from xlizard.quality_score import normalize_quality_weights
+
+    weights = normalize_quality_weights(raw if isinstance(raw, Mapping) else None)
+    out: Dict[str, float] = {}
+    for key, value in weights.items():
+        out[key] = int(value) if float(value).is_integer() else float(value)
+    return out
+
+
 def write_app_config(
     path: Optional[Path] = None,
     *,
@@ -940,9 +961,10 @@ def write_app_config(
     soft_pcts: Optional[Mapping[str, float]] = None,
     theme: Optional[str] = None,
     his_metrics: Optional[bool] = None,
+    quality_score: Optional[Mapping[str, float]] = None,
     config: Optional[Mapping[str, Any]] = None,
 ) -> Path:
-    """Write full xlizard.json (limits, soft_pct, theme, HIS flag)."""
+    """Write full xlizard.json (limits, soft_pct, theme, HIS, quality weights)."""
     file_path = Path(path) if path else config_path()
     if config is not None:
         payload = dict(config)
@@ -972,11 +994,16 @@ def write_app_config(
             payload["theme"] = theme if theme in ("dark", "light") else DEFAULT_THEME
         if his_metrics is not None:
             payload["features"] = {"his_metrics": bool(his_metrics)}
+        if quality_score is not None:
+            payload["quality_score"] = _normalize_quality_score_section(quality_score)
 
     payload.setdefault("version", CONFIG_VERSION)
     payload.setdefault("theme", DEFAULT_THEME)
     payload.setdefault("features", {"his_metrics": DEFAULT_HIS_METRICS})
     payload.setdefault("metrics", default_app_config()["metrics"])
+    payload["quality_score"] = _normalize_quality_score_section(
+        payload.get("quality_score")
+    )
 
     file_path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
@@ -991,8 +1018,8 @@ def load_app_config(
 ) -> Dict[str, Any]:
     """
     Load xlizard.json. Migrates legacy txt once if JSON is missing.
-    Returns dict with keys: version, theme, features, metrics, plus
-    convenience: thresholds, soft_pcts, his_metrics.
+    Returns dict with keys: version, theme, features, metrics, quality_score,
+    plus convenience: thresholds, soft_pcts, his_metrics.
     """
     file_path = config_path(path)
     cfg = default_app_config()
@@ -1034,12 +1061,16 @@ def load_app_config(
                     else limits[key],
                     "soft_pct": int(soft[key]),
                 }
+            cfg["quality_score"] = _normalize_quality_score_section(
+                raw.get("quality_score")
+            )
 
     limits = {k: float(cfg["metrics"][k]["limit"]) for k in METRIC_ORDER}
     soft = {k: float(cfg["metrics"][k]["soft_pct"]) for k in METRIC_ORDER}
     cfg["thresholds"] = limits
     cfg["soft_pcts"] = soft
     cfg["his_metrics"] = bool(cfg["features"].get("his_metrics", False))
+    cfg["quality_score"] = _normalize_quality_score_section(cfg.get("quality_score"))
     return cfg
 
 
@@ -1070,6 +1101,7 @@ def write_thresholds_file(
     *,
     theme: Optional[str] = None,
     his_metrics: Optional[bool] = None,
+    quality_score: Optional[Mapping[str, float]] = None,
 ) -> Path:
     """Write settings to xlizard.json (API kept for callers)."""
     return write_app_config(
@@ -1078,6 +1110,7 @@ def write_thresholds_file(
         soft_pcts=soft_pcts,
         theme=theme,
         his_metrics=his_metrics,
+        quality_score=quality_score,
     )
 
 

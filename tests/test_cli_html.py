@@ -27,6 +27,9 @@ def test_html_report_contains_cogc(all_metrics_c, tmp_path):
     assert "quality-score-value" in text
     assert "Длина (Length)" in text
     assert "Мягкое:" in text
+    assert "Балл = 100" in text
+    assert "quality_score" in text or "soft_func_weight" in text
+    assert "table-scroll" in text
     # Default config has HIS off → note present, HIS column tooltips absent
     assert "HIS-метрики отключены" in text or "HIS откл" in text
     assert out.stat().st_size > 1000
