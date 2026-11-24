@@ -1734,6 +1734,11 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
         font-size: 0.9rem;
     }
 
+    .file-summary-table {
+        margin-bottom: 0.75rem;
+        border-bottom: 1px solid var(--glass-border);
+    }
+
     .file-table th {
         text-align: left;
         padding: 1rem 1.5rem;
@@ -2294,16 +2299,78 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                                     <span class="badge-value">{{ file.comment_percentage|round(1) }}%</span>
                                     <span class="badge-label">Коммент.</span>
                                 </div>
+                                <div class="glass-badge {% if file.logical_operators <= thresholds.logical_operators*0.5 %}safe{% elif file.logical_operators <= thresholds.logical_operators %}warning{% else %}danger{% endif %}">
+                                    <span class="badge-value">{{ file.logical_operators }}</span>
+                                    <span class="badge-label">Logic</span>
+                                    <div class="tooltip-icon" data-tooltip="Логические операторы && || ! по файлу. Порог: {{ thresholds.logical_operators }}. Мягкое: {{ soft_pcts.logical_operators|default(25)|int }}%">?</div>
+                                </div>
+                                <div class="glass-badge {% if file.conditional_statements <= thresholds.conditional_statements*0.5 %}safe{% elif file.conditional_statements <= thresholds.conditional_statements %}warning{% else %}danger{% endif %}">
+                                    <span class="badge-value">{{ file.conditional_statements }}</span>
+                                    <span class="badge-label">Cond</span>
+                                    <div class="tooltip-icon" data-tooltip="Условные операторы (if/for/while/…) по файлу. Порог: {{ thresholds.conditional_statements }}. Мягкое: {{ soft_pcts.conditional_statements|default(25)|int }}%">?</div>
+                                </div>
+                                <div class="glass-badge info">
+                                    <span class="badge-value">{{ file.lines_of_code }}</span>
+                                    <span class="badge-label">LOC</span>
+                                    <div class="tooltip-icon" data-tooltip="Строки кода файла (без пустых и чисто комментарных). Всего строк: {{ file.total_lines }}, комментариев: {{ file.comment_lines }}">?</div>
+                                </div>
+                                <div class="glass-badge {% if file.avg_complexity <= thresholds.cyclomatic_complexity*0.5 %}safe{% elif file.avg_complexity <= thresholds.cyclomatic_complexity %}warning{% else %}danger{% endif %}">
+                                    <span class="badge-value">{{ file.avg_complexity|round(1) }}</span>
+                                    <span class="badge-label">Ср. CCN</span>
+                                </div>
                             </div>
                         </div>
                         
                         <div class="file-content">
+                            <div class="table-scroll">
+                            <table class="file-table file-summary-table">
+                                <thead>
+                                    <tr>
+                                        <th>Сводка файла</th>
+                                        <th>Макс. CCN</th>
+                                        <th>Ср. CCN</th>
+                                        <th>Функции</th>
+                                        <th>Откл.</th>
+                                        <th>Проблемные</th>
+                                        <th>Глубина</th>
+                                        <th>Указатели</th>
+                                        <th>ПП</th>
+                                        <th>Logic</th>
+                                        <th>Cond</th>
+                                        <th>LOC</th>
+                                        <th>Коммент.</th>
+                                        <th>Всего строк</th>
+                                        <th>Коммент. %</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td class="function-name">{{ file.basename }}</td>
+                                        <td class="{% if file.max_complexity > thresholds.cyclomatic_complexity %}metric-value-high{% else %}metric-value-low{% endif %}">{{ file.max_complexity }}</td>
+                                        <td class="{% if file.avg_complexity > thresholds.cyclomatic_complexity %}metric-value-high{% else %}metric-value-low{% endif %}">{{ file.avg_complexity|round(1) }}</td>
+                                        <td class="{% if file.active_functions_count > thresholds.function_count %}metric-value-high{% else %}metric-value-low{% endif %}">{{ file.active_functions_count }}</td>
+                                        <td class="{% if file.disabled_functions_count > 0 %}metric-value-warning{% else %}metric-value-low{% endif %}">{{ file.disabled_functions_count }}</td>
+                                        <td class="{% if file.problem_functions > 0 %}metric-value-high{% else %}metric-value-low{% endif %}">{{ file.problem_functions }}</td>
+                                        <td class="{% if file.max_block_depth > thresholds.max_block_depth %}metric-value-high{% else %}metric-value-low{% endif %}">{{ file.max_block_depth }}</td>
+                                        <td class="{% if file.pointer_operations > thresholds.pointer_operations %}metric-value-high{% else %}metric-value-low{% endif %}">{{ file.pointer_operations }}</td>
+                                        <td class="{% if file.preprocessor_directives > thresholds.preprocessor_directives %}metric-value-high{% else %}metric-value-low{% endif %}">{{ file.preprocessor_directives }}</td>
+                                        <td class="{% if file.logical_operators > thresholds.logical_operators %}metric-value-high{% else %}metric-value-low{% endif %}">{{ file.logical_operators }}</td>
+                                        <td class="{% if file.conditional_statements > thresholds.conditional_statements %}metric-value-high{% else %}metric-value-low{% endif %}">{{ file.conditional_statements }}</td>
+                                        <td class="metric-value-low">{{ file.lines_of_code }}</td>
+                                        <td class="metric-value-low">{{ file.comment_lines }}</td>
+                                        <td class="metric-value-low">{{ file.total_lines }}</td>
+                                        <td class="metric-value-low">{{ file.comment_percentage|round(1) }}%</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            </div>
                             {% if file.functions %}
                             <div class="table-scroll">
                             <table class="file-table">
                                 <thead>
                                     <tr>
                                         <th>Функция</th>
+                                        <th>Строки</th>
                                         <th>
                                             Цикл. сложность (CCN) <div class="tooltip-icon" data-tooltip="Цикломатическая сложность. Порог: {{ thresholds.cyclomatic_complexity }}. Мягкое: {{ soft_pcts.cyclomatic_complexity|default(25)|int }}%">?</div>
                                         </th>
@@ -2353,6 +2420,7 @@ TEMPLATE = '''<!DOCTYPE HTML PUBLIC
                                             <div class="tooltip-icon" data-tooltip="Несбалансированные скобки — анализ может быть неполным">⚠️</div>
                                             {% endif %}
                                         </td>
+                                        <td class="metric-value-low">{{ func.start_line|default(0) }}–{{ func.end_line|default(0) }}</td>
                                         <td class="{% if func.in_disable_block or func.has_complex_preprocessor or not func.balanced_blocks %}metric-value-warning{% elif func.cyclomatic_complexity > thresholds.cyclomatic_complexity %}metric-value-high{% else %}metric-value-low{% endif %}">
                                             {{ func.cyclomatic_complexity }}
                                         </td>

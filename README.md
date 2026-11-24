@@ -1,6 +1,6 @@
 # xLizard - Extended Metric Analyzer
 
-![Version](https://img.shields.io/badge/version-1.1.9-blue.svg)
+![Version](https://img.shields.io/badge/version-1.1.10-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-red.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
 ![Python](https://img.shields.io/badge/python-3.8%2B-green.svg)

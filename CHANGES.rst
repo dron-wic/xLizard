@@ -1,5 +1,13 @@
 [file name]: CHANGES.rst
 [file content begin]
+Version 1.1.10 (24-11-2026)
+---------------------------
+
+- В «О метриках» — явные отличия схожих метрик (CCN↔CogC, NLOC↔Length,
+  ND↔Depth, CALLS↔CALLING, Logic/Cond/PATH и др.) с примерами.
+- В каждом ``file-card`` HTML: сводная таблица файловых метрик (Logic, Cond,
+  LOC, срки, ср. CCN и др.) + колонка «Строки» у функций.
+
 Version 1.1.9 (23-11-2026)
 --------------------------
 

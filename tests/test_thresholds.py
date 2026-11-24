@@ -109,6 +109,19 @@ def test_write_thresholds_file_alias_writes_json(tmp_path):
     assert raw["metrics"]["nloc"]["soft_pct"] == 30
 
 
+def test_about_texts_contrast_similar_metrics():
+    ccn = METRICS_ABOUT_DETAIL["cyclomatic_complexity"]
+    cogc = METRICS_ABOUT_DETAIL["cognitive_complexity"]
+    assert "Отличие от CogC" in ccn or "Отличие от CCN" in cogc
+    assert "Отличие от CCN" in cogc
+    assert "Отличие от Length" in METRICS_ABOUT_DETAIL["nloc"]
+    assert "Отличие от NLOC" in METRICS_ABOUT_DETAIL["length"]
+    assert "Отличие от ND" in METRICS_ABOUT_DETAIL["max_block_depth"]
+    assert "Отличие от CALLING" in METRICS_ABOUT_DETAIL["calls"]
+    assert "Отличие от CALLS" in METRICS_ABOUT_DETAIL["calling"]
+    assert "CCN↔CogC" in METRICS_ABOUT_GENERAL or "Отличие CCN" in METRICS_ABOUT_GENERAL
+
+
 def test_metric_help_and_origin_text():
     assert set(METRIC_HELP.keys()) == set(METRIC_ORDER)
     file_keys = {
